@@ -74,9 +74,9 @@
                       evens))))))
 
 (deftest filter-with-constraint-fn
-  (testing "filter with defc predicate"
+  (testing "filter with defn predicate"
     (is (= [[3 4 5]]
-           (m/query (do (defc big [x] (> x 2))
+           (m/query (do (defn big [x] (> x 2))
                         (let [v [1 2 3 4 5]
                               bigs (filter big v)]
                           bigs)))))))

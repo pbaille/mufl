@@ -224,6 +224,276 @@
                (sort (dom/members scope-dom))))))))
 
 ;; ════════════════════════════════════════════════════════════════
+;; Step-based solver (lazy, one solution at a time)
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `solve-step` produces one solution at a time using `dom/step` instead
+;; of `dom/members`. The search state is captured as a stack of choice
+;; points, enabling pause/resume/backtrack without the call stack.
+
+(defn collect-steppable
+  "Like `collect-non-ground` but uses `dom/steppable?` instead of `dom/finite?`.
+   This allows ranges and spirals to be picked for labeling."
+  [env scope-path]
+  (let [scope (tree/cd env scope-path)]
+    (when scope
+      (->> (tree/children scope)
+           (keep (fn [child]
+                   (let [d (:domain child)]
+                     (when (and d
+                                (not (dom/singleton? d))
+                                (not (dom/void? d))
+                                (dom/steppable? d)
+                                (not (:constraint child))
+                                (not (:primitive child))
+                                (not (:link child))
+                                (not (:vector child))
+                                (not (:map child))
+                                (not (:derived child)))
+                       (tree/position child)))))
+           vec))))
+
+(defn collect-steppable-result-deps
+  "Like `collect-result-deps` but uses `dom/steppable?` instead of `dom/finite?`."
+  [env scope-path]
+  (let [root (tree/root env)
+        scope-node (tree/cd root scope-path)]
+    (when scope-node
+      (letfn [(collect-deps [node seen]
+                (let [pos (tree/position node)]
+                  (if (seen pos)
+                    #{}
+                    (let [seen (conj seen pos)
+                          resolved (bind/resolve node)
+                          rpos (tree/position resolved)]
+                      (cond
+                        ;; Vector/map — recurse into children
+                        (or (:vector resolved) (:map resolved))
+                        (reduce (fn [deps child]
+                                  (into deps (collect-deps child seen)))
+                                #{}
+                                (tree/children resolved))
+
+                        ;; Non-ground steppable domain — this is a dep
+                        (let [d (:domain resolved)]
+                          (and d
+                               (not (dom/singleton? d))
+                               (not (dom/void? d))
+                               (dom/steppable? d)
+                               (not (:derived resolved))))
+                        #{rpos}
+
+                        ;; Link that we need to follow
+                        (:link node)
+                        (let [target (tree/cd root (:link node))]
+                          (if target
+                            (collect-deps target seen)
+                            #{}))
+
+                        :else #{})))))]
+        (vec (collect-deps scope-node #{}))))))
+
+(defn- pick-variable-step
+  "Choose the variable with the smallest domain (fail-first heuristic).
+   When `dom/size` returns nil (infinite domain), treat as Long/MAX_VALUE
+   so finite domains are always preferred."
+  [env paths]
+  (when (seq paths)
+    (apply min-key
+           (fn [p]
+             (let [s (dom/size (bind/domain-of env p))]
+               (or s Long/MAX_VALUE)))
+           paths)))
+
+(declare solve-step backtrack-step)
+
+(defn- solve-step-fork
+  "Handle a fork node in solve-step. Tries the first branch and saves
+   remaining branches as a choice point for backtracking."
+  [env scope-path fork choice-points]
+  (let [branches (expand-fork (tree/cd env scope-path) fork)]
+    (loop [branches (seq branches)]
+      (when branches
+        (let [[branch-env body-expr] (first branches)
+              remaining-branches (rest branches)
+              branch-env' (try
+                            (bind/bind branch-env body-expr)
+                            (catch clojure.lang.ExceptionInfo _ nil))]
+          (if branch-env'
+            (let [new-fork (let [bf (:fork branch-env')]
+                             (when (and bf (not= bf fork))
+                               bf))
+                  result-root (tree/root
+                               (tree/upd (tree/root branch-env')
+                                         scope-path
+                                         (fn [n]
+                                           (-> n
+                                               (dissoc :fork)
+                                               (merge (select-keys branch-env'
+                                                                   [:domain :link :vector :map]))
+                                               (cond-> new-fork (assoc :fork new-fork))))))
+                  ;; Push remaining branches as a fork choice point
+                  cps (if (seq remaining-branches)
+                        (conj choice-points
+                              {:kind :fork
+                               :scope-path scope-path
+                               :fork fork
+                               :branches (vec remaining-branches)})
+                        choice-points)]
+              (or (solve-step result-root scope-path cps)
+                  ;; This branch's solve-step failed — try next branch
+                  (if (seq remaining-branches)
+                    (recur (seq remaining-branches))
+                    ;; No more branches — backtrack through choice points
+                    (backtrack-step scope-path choice-points))))
+            ;; Branch binding failed — try next branch
+            (recur (next branches))))))))
+
+(defn solve-step
+  "Produce one solution from the search state.
+   Returns [solved-env choice-points] or nil."
+  [env scope-path choice-points]
+  (let [env (tree/root env)
+        scope-node (tree/cd env scope-path)]
+    ;; First check for fork nodes (if/cond)
+    (if-let [fork (:fork scope-node)]
+      (solve-step-fork env scope-path fork choice-points)
+
+      ;; No fork — standard variable labeling with step
+      (let [scope-dom (:domain scope-node)
+            scope-ground? (or (and scope-dom (dom/singleton? scope-dom))
+                              (:link scope-node)
+                              (:vector scope-node)
+                              (:map scope-node))
+            non-ground (collect-steppable env scope-path)
+            result-deps (collect-steppable-result-deps env scope-path)
+            all-non-ground (vec (distinct (concat non-ground result-deps)))
+            relevant-non-ground (if (and scope-ground?
+                                         (not (:link scope-node))
+                                         (not (:vector scope-node))
+                                         (not (:map scope-node)))
+                                  []
+                                  all-non-ground)
+            scope-steppable? (and scope-dom
+                                  (not (:link scope-node))
+                                  (not (:vector scope-node))
+                                  (not (:map scope-node))
+                                  (dom/steppable? scope-dom)
+                                  (not (dom/singleton? scope-dom))
+                                  (not (dom/void? scope-dom)))]
+        (cond
+          ;; All ground — solution found
+          (and scope-ground? (empty? relevant-non-ground) (not scope-steppable?))
+          [env choice-points]
+
+          ;; Children need labeling
+          (seq relevant-non-ground)
+          (let [var-path (pick-variable-step env relevant-non-ground)
+                domain (bind/domain-of env var-path)
+                step-result (dom/step domain)]
+            (when step-result
+              (let [[v rest-dom] step-result
+                    ;; Push choice point for backtracking
+                    cp {:kind :var
+                        :env env
+                        :var-path var-path
+                        :remaining rest-dom}
+                    env' (try-assign env var-path v)]
+                (if env'
+                  ;; Assignment succeeded — recurse deeper
+                  (or (solve-step env' scope-path (conj choice-points cp))
+                      ;; Failed deeper — backtrack
+                      (backtrack-step scope-path (conj choice-points cp)))
+                  ;; Assignment failed (contradiction) — backtrack
+                  (backtrack-step scope-path (conj choice-points cp))))))
+
+          ;; Scope node is steppable (enum its domain directly)
+          scope-steppable?
+          (let [step-result (dom/step scope-dom)]
+            (when step-result
+              (let [[v rest-dom] step-result
+                    cp {:kind :scope-var
+                        :env env
+                        :scope-path scope-path
+                        :remaining rest-dom}
+                    env' (tree/put env scope-path :domain (dom/single v))]
+                [env' (conj choice-points cp)]))))))))
+
+(defn backtrack-step
+  "Pop the most recent choice point, step its remainder, continue."
+  [scope-path choice-points]
+  (when (seq choice-points)
+    (let [cp (peek choice-points)
+          rest-cps (pop choice-points)]
+      (case (:kind cp)
+        ;; Variable choice point — step the remaining domain
+        :var
+        (let [step-result (dom/step (:remaining cp))]
+          (if step-result
+            (let [[v rest-dom'] step-result
+                  cp' (assoc cp :remaining rest-dom')
+                  env' (try-assign (:env cp) (:var-path cp) v)]
+              (if env'
+                (or (solve-step env' scope-path (conj rest-cps cp'))
+                    ;; This value failed deeper — continue backtracking on this cp
+                    (backtrack-step scope-path (conj rest-cps cp')))
+                ;; This value failed immediately — continue backtracking on this cp
+                (backtrack-step scope-path (conj rest-cps cp'))))
+            ;; This choice point exhausted — backtrack further
+            (backtrack-step scope-path rest-cps)))
+
+        ;; Scope variable choice point
+        :scope-var
+        (let [step-result (dom/step (:remaining cp))]
+          (if step-result
+            (let [[v rest-dom'] step-result
+                  cp' (assoc cp :remaining rest-dom')
+                  env' (tree/put (:env cp) (:scope-path cp) :domain (dom/single v))]
+              [env' (conj rest-cps cp')])
+            ;; Exhausted — backtrack further
+            (backtrack-step scope-path rest-cps)))
+
+        ;; Fork choice point — try remaining branches
+        :fork
+        (let [branches (:branches cp)
+              fork (:fork cp)]
+          (loop [branches (seq branches)]
+            (when branches
+              (let [[branch-env body-expr] (first branches)
+                    remaining (rest branches)
+                    branch-env' (try
+                                  (bind/bind branch-env body-expr)
+                                  (catch clojure.lang.ExceptionInfo _ nil))]
+                (if branch-env'
+                  (let [new-fork (let [bf (:fork branch-env')]
+                                   (when (and bf (not= bf fork))
+                                     bf))
+                        result-root (tree/root
+                                     (tree/upd (tree/root branch-env')
+                                               scope-path
+                                               (fn [n]
+                                                 (-> n
+                                                     (dissoc :fork)
+                                                     (merge (select-keys branch-env'
+                                                                         [:domain :link :vector :map]))
+                                                     (cond-> new-fork (assoc :fork new-fork))))))
+                        cps (if (seq remaining)
+                              (conj rest-cps
+                                    {:kind :fork
+                                     :scope-path scope-path
+                                     :fork fork
+                                     :branches (vec remaining)})
+                              rest-cps)]
+                    (or (solve-step result-root scope-path cps)
+                        ;; This branch failed — try next
+                        (if (seq remaining)
+                          (recur (seq remaining))
+                          ;; No more branches — backtrack further
+                          (backtrack-step scope-path rest-cps))))
+                  ;; Branch failed to bind — try next
+                  (recur (next branches)))))))))))
+
+;; ════════════════════════════════════════════════════════════════
 ;; Result extraction
 ;; ════════════════════════════════════════════════════════════════
 
@@ -272,7 +542,7 @@
          (not (:derived child))
          (not (:primitive child))
          (not (:mufl-fn child))
-         (not (:defc child))
+         (not (:defn-constructor child))
          (not (:bind child))
          ;; Must hold a value: domain, link, vector, or map
          (or (:domain child)

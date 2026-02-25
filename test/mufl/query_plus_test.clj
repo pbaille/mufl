@@ -50,9 +50,9 @@
     (is (= '[{v [1 20]} {v [2 20]} {v [3 20]}]
            (m/query+ (let [v [(one-of 1 2 3) 20]] v))))))
 
-(deftest query+-with-defc
-  (testing "defc definitions are excluded from bindings"
-    (let [results (m/query+ (defc positive [x] (> x 0))
+(deftest query+-with-defn
+  (testing "defn definitions are excluded from bindings"
+    (let [results (m/query+ (defn positive [x] (> x 0))
                             (let [n (one-of -1 0 1 2)]
                               (positive n)
                               n))]
@@ -60,9 +60,9 @@
       ;; 'positive' should NOT appear as a binding
       (is (every? #(not (contains? % 'positive)) results)))))
 
-(deftest query+-with-defdomain
-  (testing "defdomain definitions are excluded from bindings"
-    (let [results (m/query+ (defdomain Person {:name string :age (between 0 150)})
+(deftest query+-with-def
+  (testing "def definitions are excluded from bindings"
+    (let [results (m/query+ (def Person {:name string :age (between 0 150)})
                             (let [p {:name "Alice" :age (one-of 10 25 200)}]
                               (Person p)
                               (:age p)))]
@@ -94,7 +94,7 @@
 
 (deftest query+-implicit-do
   (testing "multiple body forms (implicit do)"
-    (let [results (m/query+ (defc big [x] (> x 3))
+    (let [results (m/query+ (defn big [x] (> x 3))
                             (let [n (one-of 1 2 3 4 5)]
                               (big n)
                               n))]

@@ -10,24 +10,24 @@
   (testing "single body form still works"
     (is (= [42] (m/query 42))))
 
-  (testing "multi-body query with defc"
+  (testing "multi-body query with defn"
     (is (= [1 2 3]
-           (m/query (defc positive [x] (> x 0))
+           (m/query (defn positive [x] (> x 0))
                     (let [n (one-of -1 0 1 2 3)]
                       (positive n)
                       n)))))
 
-  (testing "multi-body query with defdomain"
+  (testing "multi-body query with def"
     (is (= [10 25]
-           (m/query (defdomain Person {:name string :age (between 0 150)})
+           (m/query (def Person {:name string :age (between 0 150)})
                     (let [p {:name "Alice" :age (one-of 10 25 200)}]
                       (Person p)
                       (:age p))))))
 
   (testing "multi-body query with multiple defs"
     (is (= [25 30]
-           (m/query (defdomain Person {:name string :age (between 0 150)})
-                    (defc adult [p] (>= (:age p) 18))
+           (m/query (def Person {:name string :age (between 0 150)})
+                    (defn adult [p] (>= (:age p) 18))
                     (let [p {:name "Alice" :age (one-of 10 25 30)}]
                       (Person p)
                       (adult p)

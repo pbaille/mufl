@@ -215,25 +215,25 @@
          (m/query (let [(as m {:x a . rest}) {:x 1 :y 2 :z 3}] [rest m])))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Constraint functions (defc) — multi-body query
+;; Constraint functions (defn) — multi-body query
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest doc-defc
+(deftest doc-defn
   (is (= [1 2 3]
-         (m/query (defc positive [x] (> x 0))
+         (m/query (defn positive [x] (> x 0))
                   (let [n (one-of -1 0 1 2 3)]
                     (positive n)
                     n))))
   (is (= #{[3 5] [4 4] [5 3]}
-         (set (m/query (defc sums-to [a b target]
+         (set (m/query (defn sums-to [a b target]
                          (= (+ a b) target))
                        (let [x (between 1 5)
                              y (between 1 5)]
                          (sums-to x y 8)
                          [x y])))))
   (is (= [[1 2] [1 3] [2 3]]
-         (m/query (defc positive [x] (> x 0))
-                  (defc ordered [a b] (< a b))
+         (m/query (defn positive [x] (> x 0))
+                  (defn ordered [a b] (< a b))
                   (let [x (one-of -1 0 1 2 3)
                         y (one-of -1 0 1 2 3)]
                     (positive x)
@@ -242,28 +242,28 @@
                     [x y])))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Domains (defdomain) — multi-body query
+;; Domains (def) — multi-body query
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest doc-defdomain
+(deftest doc-def
   (is (= [10 25]
-         (m/query (defdomain Person {:name string :age (between 0 150)})
+         (m/query (def Person {:name string :age (between 0 150)})
                   (let [p {:name "Alice" :age (one-of 10 25 200)}]
                     (Person p)
                     (:age p)))))
   (is (= [30]
-         (m/query (defdomain Person {:name string :age (between 0 150)})
-                  (defdomain Employee (and Person {:company string}))
+         (m/query (def Person {:name string :age (between 0 150)})
+                  (def Employee (and Person {:company string}))
                   (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
                     (Employee e)
                     (:age e)))))
   (is (= [["Bob" 25]]
-         (m/query (defdomain Person {:name string :age (between 0 150)})
-                  (let [(Person (ks name age)) {:name "Bob" :age 25}]
-                    [name age]))))
+         (m/query (do (defn person [name age] {:name (string name) :age (integer age)})
+                      (let [(person name age) {:name "Bob" :age 25}]
+                        [name age])))))
   (is (= [25 30]
-         (m/query (defdomain Person {:name string :age (between 0 150)})
-                  (defc adult [p] (>= (:age p) 18))
+         (m/query (def Person {:name string :age (between 0 150)})
+                  (defn adult [p] (>= (:age p) 18))
                   (let [p {:name "Alice" :age (one-of 10 25 30)}]
                     (Person p)
                     (adult p)
@@ -295,10 +295,10 @@
                       (and (> (nth doubled 0) 3)
                            doubled)))))))
 
-(deftest doc-hofs-filter-with-defc
+(deftest doc-hofs-filter-with-defn
   (testing "filter with custom constraint function"
     (is (= [[4 5]]
-           (m/query (do (defc big [x] (> x 3))
+           (m/query (do (defn big [x] (> x 3))
                         (let [v [1 2 3 4 5]
                               bigs (filter big v)]
                           bigs)))))))

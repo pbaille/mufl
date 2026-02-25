@@ -37,21 +37,67 @@
 
 (defn- type-domain-bind
   "Build a :bind fn for a type domain primitive (string, number, etc.).
-   Nullary: set own domain. Unary: constrain arg to type domain."
+   Nullary: set own domain. Unary: constrain arg AND link to it.
+   (integer x) constrains x to integer AND returns a link to x,
+   so the expression evaluates to the constrained value.
+   In destructuring: (integer a) binds a to the value, then constrains to integer."
   [type-dom label]
   (fn [env args]
-    (if (seq args)
-      ;; Unary: (string x) → constrain arg to type domain
-      (let [[arg] args
-            [env' path] (bind/ensure-node-abs env arg)
-            d (bind/domain-of (tree/root env') path)
+    (if (:destructuring (meta args))
+      ;; Destructuring: (integer a value) — bind a to value, constrain to type
+      (let [value (last args)
+            inner-pattern (first (butlast args))
+            ;; First bind the inner pattern to the value
+            env' (bind/destructure env inner-pattern value)
+            ;; Then constrain the value to the type domain
+            [env'' val-path] (bind/ensure-node-abs env' value)
+            d (bind/domain-of (tree/root env'') val-path)
             narrowed (dom/intersect d type-dom)]
         (if (dom/void? narrowed)
-          (throw (ex-info (str "Contradiction: no " label " values") {:arg arg}))
-          (let [env' (bind/set-domain (tree/root env') path narrowed)]
-            (or (tree/cd env' (tree/position env)) env'))))
-      ;; Nullary: (string) → set own domain
-      (assoc env :domain type-dom))))
+          (throw (ex-info (str "Contradiction: no " label " values in destructuring") {:value value}))
+          (let [env'' (bind/set-domain (tree/root env'') val-path narrowed)]
+            (or (tree/cd env'' (tree/position env)) env''))))
+      (if (seq args)
+        ;; Unary: (string x) → constrain arg to type domain + link to it
+        (let [[arg] args
+              [env' path] (bind/ensure-node-abs env arg)
+              d (bind/domain-of (tree/root env') path)
+              narrowed (dom/intersect d type-dom)]
+          (if (dom/void? narrowed)
+            (throw (ex-info (str "Contradiction: no " label " values") {:arg arg}))
+            (let [env' (bind/set-domain (tree/root env') path narrowed)
+                  caller (or (tree/cd env' (tree/position env)) env')]
+              ;; Link caller to the constrained arg so (integer x) evaluates to x
+              (assoc caller :link path))))
+        ;; Nullary: (string) → set own domain
+        (assoc env :domain type-dom)))))
+
+(defn- resolve-type-expr
+  "Resolve a type expression to a domain value.
+   Handles:
+   - Symbols: look up :type-domain first, then :domain-def (if it has a simple domain)
+   - List expressions: bind them and extract :type-domain from the result
+   Returns the domain or nil if unresolvable as a domain."
+  [env expr]
+  (cond
+    (symbol? expr)
+    (when-let [found (tree/find env [expr])]
+      (let [resolved (bind/resolve found)]
+        (or (:type-domain resolved)
+            ;; For domain-defs that are simple type constraints, extract the domain
+            (when-let [ddef (:domain-def resolved)]
+              (when (= :type-constraint (:kind ddef))
+                (:domain ddef))))))
+
+    (seq? expr)
+    ;; Bind the expression to get its :type-domain
+    (let [tmp (gensym "typeres__")
+          env' (bind/bind env tmp expr)
+          node (when-let [found (tree/find env' [tmp])]
+                 (bind/resolve found))]
+      (:type-domain node))
+
+    :else nil))
 
 (defn base-env
   "Build the base environment with all built-in forms."
@@ -524,13 +570,19 @@
                  domain-def (:domain-def type-info)]
 
              (if-not vec-expr
-               ;; Nullary/schema context: not directly bindable as expression
-               ;; This is handled by resolve-domain-schema instead
-               (throw (ex-info "vector-of in expression context requires 2 args: (vector-of type vec)"
-                               {:args args}))
+               ;; Nullary: (vector-of integer) → produce composite domain value
+               (let [elem-dom (or type-dom
+                                  (resolve-type-expr env type-expr))]
+                 (if elem-dom
+                   (let [composite (dom/vector-of-dom elem-dom)]
+                     (assoc env :domain composite :type-domain composite))
+                   (throw (ex-info (str "vector-of: cannot resolve element type to a domain: " type-expr)
+                                   {:type type-expr}))))
 
                ;; Binary: constrain vector elements
-               (let [;; Resolve the vector
+               (let [;; Try to resolve element type to a domain value (covers type-dom + resolve-type-expr)
+                     elem-dom (or type-dom (resolve-type-expr env type-expr))
+                     ;; Resolve the vector
                      vec-node (cond
                                 (symbol? vec-expr)
                                 (when-let [found (tree/find env [vec-expr])]
@@ -545,52 +597,55 @@
                      _ (when-not (:vector vec-node)
                          (throw (ex-info "vector-of: second argument must be a vector"
                                          {:vec vec-expr})))
-                     children (sort-by ::tree/name
-                                       (clojure.core/filter #(integer? (::tree/name %))
-                                                 (tree/children vec-node)))
                      my-pos (tree/position env)]
-                 ;; For each child, apply the type constraint
-                 (let [env-root
-                       (reduce
-                        (fn [env-root child]
-                          (let [resolved-child (bind/resolve child)
-                                child-path (tree/position resolved-child)]
-                            (cond
-                              ;; Simple type domain: intersect directly
-                              type-dom
-                              (let [current (bind/domain-of env-root child-path)
-                                    narrowed (dom/intersect current type-dom)]
-                                (if (dom/void? narrowed)
-                                  (throw (ex-info "vector-of: contradiction on element"
-                                                  {:path child-path :type type-dom}))
-                                  (let [env' (bind/set-domain env-root child-path narrowed)]
-                                    ;; Propagate watchers
-                                    (let [node (tree/cd env' child-path)
-                                          watchers (:watched-by node)]
+
+                 (if elem-dom
+                   ;; Fast path: build composite domain + apply-composite-constraint
+                   (let [composite (dom/vector-of-dom elem-dom)
+                         target-path (tree/position vec-node)
+                         result (bind/apply-composite-constraint (tree/root env) target-path composite)]
+                     (if-not result
+                       (throw (ex-info "vector-of: contradiction" {:type type-expr :vec vec-expr}))
+                       (let [env' (:env result)
+                             changed (:changed result)
+                             ;; Propagate watchers for all changed paths
+                             env' (if (seq changed)
+                                    (let [watchers (->> changed
+                                                        (mapcat (fn [p]
+                                                                  (let [node (tree/at env' p)]
+                                                                    (:watched-by node))))
+                                                        (distinct)
+                                                        vec)]
                                       (if (seq watchers)
-                                        (or (bind/propagate env' (vec watchers))
-                                            (throw (ex-info "Contradiction during vector-of propagation"
-                                                            {:path child-path})))
-                                        env')))))
+                                        (or (bind/propagate env' watchers)
+                                            (throw (ex-info "Contradiction during vector-of propagation" {})))
+                                        env'))
+                                    env')]
+                         (or (tree/cd env' my-pos)
+                             (throw (ex-info "vector-of: lost position" {:pos my-pos}))))))
 
-                              ;; Domain-def: apply structural constraint via nth
-                              domain-def
-                              (let [idx (::tree/name child)
-                                    env-at-pos (tree/cd env-root my-pos)
-                                    env-after (bind/apply-domain-constraint env-at-pos domain-def
-                                                                           [(list 'nth vec-expr idx)])]
-                                (tree/root env-after))
-
-                              ;; Fallback: try binding the type as a constraint on each element
-                              :else
-                              (let [idx (::tree/name child)
-                                    env-at-pos (tree/cd env-root my-pos)
-                                    env-after (bind/bind env-at-pos (list type-expr (list 'nth vec-expr idx)))]
-                                (tree/root env-after)))))
-                        (tree/root env)
-                        children)]
-                   (or (tree/cd env-root my-pos)
-                       (throw (ex-info "vector-of: lost position" {:pos my-pos}))))))))})
+                   ;; Slow path: domain-def or fallback — manual tree walking
+                   (let [children (sort-by ::tree/name
+                                           (clojure.core/filter #(integer? (::tree/name %))
+                                                                (tree/children vec-node)))
+                         env-root
+                         (reduce
+                          (fn [env-root child]
+                            (let [idx (::tree/name child)]
+                              (if domain-def
+                                ;; Domain-def: apply structural constraint via nth
+                                (let [env-at-pos (tree/cd env-root my-pos)
+                                      env-after (bind/apply-domain-constraint env-at-pos domain-def
+                                                                              [(list 'nth vec-expr idx)])]
+                                  (tree/root env-after))
+                                ;; Fallback: try binding the type as a constraint on each element
+                                (let [env-at-pos (tree/cd env-root my-pos)
+                                      env-after (bind/bind env-at-pos (list type-expr (list 'nth vec-expr idx)))]
+                                  (tree/root env-after)))))
+                          (tree/root env)
+                          children)]
+                     (or (tree/cd env-root my-pos)
+                         (throw (ex-info "vector-of: lost position" {:pos my-pos})))))))))})
 
       ;; ── tuple: per-position type constraints ────────────────
       ;; (tuple [integer string boolean] v) — v must be a 3-element vector
@@ -611,12 +666,23 @@
                                      {:types types-vec})))]
 
              (if-not vec-expr
-               ;; Schema context only — handled by resolve-domain-schema
-               (throw (ex-info "tuple in expression context requires 2 args: (tuple [types...] vec)"
-                               {:args args}))
+               ;; Nullary: (tuple [integer string]) → produce composite domain value
+               (let [elem-doms (mapv (fn [type-sym]
+                                       (let [d (resolve-type-expr env type-sym)]
+                                         (when-not d
+                                           (throw (ex-info (str "tuple: cannot resolve element type to a domain: " type-sym)
+                                                           {:type type-sym})))
+                                         d))
+                                     types-vec)
+                     composite (dom/tuple-dom elem-doms)]
+                 (assoc env :domain composite :type-domain composite))
 
                ;; Binary: constrain vector to match tuple shape
-               (let [vec-node (cond
+               (let [;; Try to resolve all element types to domains
+                     elem-doms (mapv (fn [type-sym] (resolve-type-expr env type-sym)) types-vec)
+                     all-resolved? (every? some? elem-doms)
+                     ;; Resolve the vector
+                     vec-node (cond
                                 (symbol? vec-expr)
                                 (when-let [found (tree/find env [vec-expr])]
                                   (bind/resolve found))
@@ -632,7 +698,7 @@
                                          {:vec vec-expr})))
                      children (sort-by ::tree/name
                                        (clojure.core/filter #(integer? (::tree/name %))
-                                                 (tree/children vec-node)))
+                                                            (tree/children vec-node)))
                      n (clojure.core/count children)
                      expected-n (count types-vec)
                      _ (when (not= n expected-n)
@@ -640,51 +706,76 @@
                                          {:actual n :expected expected-n :vec vec-expr})))
                      my-pos (tree/position env)]
 
-                 ;; For each position, apply the corresponding type constraint
-                 (let [env-root
-                       (reduce
-                        (fn [env-root [idx type-sym]]
-                          (let [child (nth children idx)
-                                resolved-child (bind/resolve child)
-                                child-path (tree/position resolved-child)
-                                ;; Resolve type for this position
-                                tnode (tree/find env [type-sym])
-                                tinfo (when tnode (bind/resolve tnode))
-                                tdom (:type-domain tinfo)
-                                ddef (:domain-def tinfo)]
-                            (cond
-                              ;; Simple type domain
-                              tdom
-                              (let [current (bind/domain-of env-root child-path)
-                                    narrowed (dom/intersect current tdom)]
-                                (if (dom/void? narrowed)
-                                  (throw (ex-info (str "tuple: contradiction at position " idx)
-                                                  {:idx idx :type type-sym}))
-                                  (let [env' (bind/set-domain env-root child-path narrowed)
-                                        node (tree/cd env' child-path)
-                                        watchers (:watched-by node)]
-                                    (if (seq watchers)
-                                      (or (bind/propagate env' (vec watchers))
-                                          (throw (ex-info "Contradiction during tuple propagation"
-                                                          {:idx idx})))
-                                      env'))))
+                 (if all-resolved?
+                   ;; Fast path: build composite domain + apply-composite-constraint
+                   (let [composite (dom/tuple-dom elem-doms)
+                         target-path (tree/position vec-node)
+                         result (bind/apply-composite-constraint (tree/root env) target-path composite)]
+                     (if-not result
+                       (throw (ex-info "tuple: contradiction" {:types types-vec :vec vec-expr}))
+                       (let [env' (:env result)
+                             changed (:changed result)
+                             ;; Propagate watchers for all changed paths
+                             env' (if (seq changed)
+                                    (let [watchers (->> changed
+                                                        (mapcat (fn [p]
+                                                                  (let [node (tree/at env' p)]
+                                                                    (:watched-by node))))
+                                                        (distinct)
+                                                        vec)]
+                                      (if (seq watchers)
+                                        (or (bind/propagate env' watchers)
+                                            (throw (ex-info "Contradiction during tuple propagation" {})))
+                                        env'))
+                                    env')]
+                         (or (tree/cd env' my-pos)
+                             (throw (ex-info "tuple: lost position" {:pos my-pos}))))))
 
-                              ;; Domain-def
-                              ddef
-                              (let [env-at-pos (tree/cd env-root my-pos)
-                                    env-after (bind/apply-domain-constraint env-at-pos ddef
-                                                                           [(list 'nth vec-expr idx)])]
-                                (tree/root env-after))
+                   ;; Slow path: some types need domain-def or fallback handling
+                   (let [env-root
+                         (reduce
+                          (fn [env-root [idx type-sym]]
+                            (let [child (nth children idx)
+                                  resolved-child (bind/resolve child)
+                                  child-path (tree/position resolved-child)
+                                  ;; Resolve type for this position
+                                  tnode (tree/find env [type-sym])
+                                  tinfo (when tnode (bind/resolve tnode))
+                                  tdom (:type-domain tinfo)
+                                  ddef (:domain-def tinfo)]
+                              (cond
+                                ;; Simple type domain
+                                tdom
+                                (let [current (bind/domain-of env-root child-path)
+                                      narrowed (dom/intersect current tdom)]
+                                  (if (dom/void? narrowed)
+                                    (throw (ex-info (str "tuple: contradiction at position " idx)
+                                                    {:idx idx :type type-sym}))
+                                    (let [env' (bind/set-domain env-root child-path narrowed)
+                                          node (tree/cd env' child-path)
+                                          watchers (:watched-by node)]
+                                      (if (seq watchers)
+                                        (or (bind/propagate env' (vec watchers))
+                                            (throw (ex-info "Contradiction during tuple propagation"
+                                                            {:idx idx})))
+                                        env'))))
 
-                              ;; Fallback: treat as expression constraint
-                              :else
-                              (let [env-at-pos (tree/cd env-root my-pos)
-                                    env-after (bind/bind env-at-pos (list type-sym (list 'nth vec-expr idx)))]
-                                (tree/root env-after)))))
-                        (tree/root env)
-                        (map-indexed vector types-vec))]
-                   (or (tree/cd env-root my-pos)
-                       (throw (ex-info "tuple: lost position" {:pos my-pos}))))))))})
+                                ;; Domain-def
+                                ddef
+                                (let [env-at-pos (tree/cd env-root my-pos)
+                                      env-after (bind/apply-domain-constraint env-at-pos ddef
+                                                                              [(list 'nth vec-expr idx)])]
+                                  (tree/root env-after))
+
+                                ;; Fallback: treat as expression constraint
+                                :else
+                                (let [env-at-pos (tree/cd env-root my-pos)
+                                      env-after (bind/bind env-at-pos (list type-sym (list 'nth vec-expr idx)))]
+                                  (tree/root env-after)))))
+                          (tree/root env)
+                          (map-indexed vector types-vec))]
+                     (or (tree/cd env-root my-pos)
+                         (throw (ex-info "tuple: lost position" {:pos my-pos})))))))))})
 
       ;; ── map-of: constrain all map entries ───────────────────
       ;; (map-of keyword integer m) — all keys must be keywords,
@@ -714,11 +805,21 @@
                  val-domain-def (:domain-def val-info)]
 
              (if-not map-expr
-               (throw (ex-info "map-of in expression context requires 3 args: (map-of key-type val-type map)"
-                               {:args args}))
+               ;; Nullary: (map-of keyword integer) → produce composite domain value
+               (let [k-dom (or key-dom (resolve-type-expr env key-type-expr))
+                     v-dom (or val-dom (resolve-type-expr env val-type-expr))]
+                 (if (and k-dom v-dom)
+                   (let [composite (dom/map-of-dom k-dom v-dom)]
+                     (assoc env :domain composite :type-domain composite))
+                   (throw (ex-info (str "map-of: cannot resolve key/val types to domains")
+                                   {:key-type key-type-expr :val-type val-type-expr}))))
 
                ;; Ternary: constrain map entries
-               (let [map-node (cond
+               (let [;; Try to resolve both key and value types to domains
+                     k-dom (or key-dom (resolve-type-expr env key-type-expr))
+                     v-dom (or val-dom (resolve-type-expr env val-type-expr))
+                     ;; Resolve the map
+                     map-node (cond
                                 (symbol? map-expr)
                                 (when-let [found (tree/find env [map-expr])]
                                   (bind/resolve found))
@@ -732,105 +833,281 @@
                      _ (when-not (:map map-node)
                          (throw (ex-info "map-of: third argument must be a map"
                                          {:map map-expr})))
-                     children (tree/children map-node)
                      my-pos (tree/position env)]
 
-                 ;; Validate keys against key type, constrain values against val type
-                 (let [env-root
-                       (reduce
-                        (fn [env-root child]
-                          (let [k (::tree/name child)]
-                            ;; Check key type
-                            (when key-dom
-                              (when-not (dom/contains-val? key-dom k)
-                                (throw (ex-info (str "map-of: key " k " does not match key type")
-                                                {:key k :key-type key-type-expr}))))
-                            ;; Constrain value
-                            (let [resolved-child (bind/resolve child)
-                                  child-path (tree/position resolved-child)]
-                              (cond
-                                val-dom
-                                (let [current (bind/domain-of env-root child-path)
-                                      narrowed (dom/intersect current val-dom)]
-                                  (if (dom/void? narrowed)
-                                    (throw (ex-info (str "map-of: contradiction on value for key " k)
-                                                    {:key k :val-type val-type-expr}))
-                                    (let [env' (bind/set-domain env-root child-path narrowed)
-                                          node (tree/cd env' child-path)
-                                          watchers (:watched-by node)]
+                 (if (and k-dom v-dom)
+                   ;; Fast path: build composite domain + apply-composite-constraint
+                   (let [composite (dom/map-of-dom k-dom v-dom)
+                         target-path (tree/position map-node)
+                         result (bind/apply-composite-constraint (tree/root env) target-path composite)]
+                     (if-not result
+                       (throw (ex-info "map-of: contradiction" {:key-type key-type-expr :val-type val-type-expr :map map-expr}))
+                       (let [env' (:env result)
+                             changed (:changed result)
+                             ;; Propagate watchers for all changed paths
+                             env' (if (seq changed)
+                                    (let [watchers (->> changed
+                                                        (mapcat (fn [p]
+                                                                  (let [node (tree/at env' p)]
+                                                                    (:watched-by node))))
+                                                        (distinct)
+                                                        vec)]
                                       (if (seq watchers)
-                                        (or (bind/propagate env' (vec watchers))
-                                            (throw (ex-info "Contradiction during map-of propagation"
-                                                            {:key k})))
-                                        env'))))
+                                        (or (bind/propagate env' watchers)
+                                            (throw (ex-info "Contradiction during map-of propagation" {})))
+                                        env'))
+                                    env')]
+                         (or (tree/cd env' my-pos)
+                             (throw (ex-info "map-of: lost position" {:pos my-pos}))))))
 
-                                val-domain-def
-                                (let [env-at-pos (tree/cd env-root my-pos)
-                                      env-after (bind/apply-domain-constraint env-at-pos val-domain-def
-                                                                             [(list 'get map-expr k)])]
-                                  (tree/root env-after))
+                   ;; Slow path: domain-def or fallback handling
+                   (let [children (tree/children map-node)
+                         env-root
+                         (reduce
+                          (fn [env-root child]
+                            (let [k (::tree/name child)]
+                              ;; Check key type
+                              (when key-dom
+                                (when-not (dom/contains-val? key-dom k)
+                                  (throw (ex-info (str "map-of: key " k " does not match key type")
+                                                  {:key k :key-type key-type-expr}))))
+                              ;; Constrain value
+                              (let [resolved-child (bind/resolve child)
+                                    child-path (tree/position resolved-child)]
+                                (cond
+                                  val-dom
+                                  (let [current (bind/domain-of env-root child-path)
+                                        narrowed (dom/intersect current val-dom)]
+                                    (if (dom/void? narrowed)
+                                      (throw (ex-info (str "map-of: contradiction on value for key " k)
+                                                      {:key k :val-type val-type-expr}))
+                                      (let [env' (bind/set-domain env-root child-path narrowed)
+                                            node (tree/cd env' child-path)
+                                            watchers (:watched-by node)]
+                                        (if (seq watchers)
+                                          (or (bind/propagate env' (vec watchers))
+                                              (throw (ex-info "Contradiction during map-of propagation"
+                                                              {:key k})))
+                                          env'))))
 
-                                :else
-                                (let [env-at-pos (tree/cd env-root my-pos)
-                                      env-after (bind/bind env-at-pos (list val-type-expr (list 'get map-expr k)))]
-                                  (tree/root env-after))))))
-                        (tree/root env)
-                        children)]
-                   (or (tree/cd env-root my-pos)
-                       (throw (ex-info "map-of: lost position" {:pos my-pos}))))))))})
+                                  val-domain-def
+                                  (let [env-at-pos (tree/cd env-root my-pos)
+                                        env-after (bind/apply-domain-constraint env-at-pos val-domain-def
+                                                                                [(list 'get map-expr k)])]
+                                    (tree/root env-after))
 
-      ;; ── defdomain: named structural domain ─────────────────
-      ;; (defdomain Person {:name string :age (between 0 150)})
-      ;; Creates a named domain definition that can be used as:
-      ;; 1. A constraint: (Person p) → constrains p to match the schema
-      ;; 2. In destructuring: (let [(Person (ks name age)) p] ...)
-      ;; 3. Composed: (defdomain Employee (and Person {:company string}))
-      (defprim 'defdomain
+                                  :else
+                                  (let [env-at-pos (tree/cd env-root my-pos)
+                                        env-after (bind/bind env-at-pos (list val-type-expr (list 'get map-expr k)))]
+                                    (tree/root env-after))))))
+                          (tree/root env)
+                          children)]
+                     (or (tree/cd env-root my-pos)
+                         (throw (ex-info "map-of: lost position" {:pos my-pos})))))))))})
+
+      ;; ── def: named definition ────────────────────────────────
+      ;; (def Person {:name string :age integer})   → domain definition
+      ;; (def SmallInt (between 1 10))              → scalar domain
+      ;; (def pi 3.14159)                           → just a value
+      ;;
+      ;; `def` names a value. If the value is a domain schema, it creates
+      ;; a named domain usable as a constraint: (Person p) narrows p.
+      ;; No destructuring — use `defn` constructors for that.
+      (defprim 'def
         {:bind
-         (fn [env [domain-name schema-expr]]
-           (let [;; Resolve the schema into a domain-def
-                 domain-def (bind/resolve-domain-schema env schema-expr)
-                 my-pos (tree/position env)]
-             ;; Store the domain definition as a named node in the environment
-             ;; Navigate up to parent scope to define it there (like defn would)
-             (-> (tree/root env)
-                 (tree/ensure-path (conj my-pos domain-name))
-                 (tree/put (conj my-pos domain-name)
-                           {:domain-def domain-def
-                            :bind (fn [call-env args]
-                                    (if (:destructuring (meta args))
-                                      ;; Destructuring context: (DomainName inner-pattern) against value
-                                      ;; args = [inner-pattern value]
-                                      (let [value (last args)
-                                            inner-pattern (first (butlast args))
-                                            tmp (gensym "domdest__")
-                                            call-env (bind/bind call-env tmp value)
-                                            call-env (bind/apply-domain-constraint call-env domain-def [tmp])]
-                                        (bind/destructure call-env inner-pattern tmp))
-                                      ;; Expression context: (DomainName arg) → constrain arg
-                                      (bind/apply-domain-constraint call-env domain-def args)))})
-                 (tree/cd my-pos))))})
+         (fn [env [def-name value-expr]]
+           (let [my-pos (tree/position env)
+                 ;; Try interpreting as a domain schema
+                 domain-def (try (bind/resolve-domain-schema env value-expr)
+                                 (catch Exception _ nil))]
+             (if domain-def
+               ;; Domain definition — store with :domain-def and :bind (expression-position only)
+               (-> (tree/root env)
+                   (tree/ensure-path (conj my-pos def-name))
+                   (tree/put (conj my-pos def-name)
+                             {:domain-def domain-def
+                              :bind (fn [call-env args]
+                                      (bind/apply-domain-constraint call-env domain-def args))})
+                   (tree/cd my-pos))
+               ;; Not a domain — bind as regular expression
+               (let [env' (-> (tree/root env)
+                              (tree/ensure-path (conj my-pos def-name))
+                              (tree/cd (conj my-pos def-name)))]
+                 (let [result (bind/bind env' value-expr)]
+                   (tree/cd (tree/root result) my-pos))))))})
 
-      ;; ── defc: named constraint function ─────────────────────
-      ;; (defc positive [x] (> x 0))
-      ;; When applied: (positive n) ≡ binding params as aliases to args
-      ;; in the caller's scope, then evaluating the body.
-      ;; Unlike fn, defc doesn't create a call scope — constraints
-      ;; narrow the caller's variables directly.
-      (defprim 'defc
+      ;; ── defn: named constructor / constraint function ────────
+      ;; (defn point [x y] {:x (integer x) :y (integer y)})
+      ;;
+      ;; Expression position (constructor):
+      ;;   (point 1 2)  → {:x 1 :y 2}
+      ;;   Uses call-scope semantics: creates scope, binds params to args,
+      ;;   evaluates body, returns result.
+      ;;
+      ;; Pattern position (destructor):
+      ;;   (let [(point x y) {:x 1 :y 2}] [x y])  → [1 2]
+      ;;   Inverts the constructor: uses the body as a destructuring pattern
+      ;;   with params as binding targets.
+      ;;
+      ;; Also works as constraint function:
+      ;;   (defn positive [x] (> x 0))
+      ;;   (positive n)  — narrows n via constraints in call scope.
+      (defprim 'defn
         {:bind
          (fn [env [cname params & body]]
            (let [body-expr (if (= 1 (count body))
                              (first body)
                              (cons 'do body))
                  my-pos (tree/position env)]
-             ;; Store the defc definition as a named node in the environment
              (-> (tree/root env)
                  (tree/ensure-path (conj my-pos cname))
                  (tree/put (conj my-pos cname)
-                           {:defc {:params params
-                                   :body body-expr}})
+                           {:defn-constructor {:params params
+                                               :body body-expr}
+                            :bind (fn [call-env args]
+                                    (if (:destructuring (meta args))
+                                      ;; ── Pattern position: destructor ──
+                                      ;; args = [pattern-args... value]
+                                      ;; The body is used as a pattern against value,
+                                      ;; with params mapped to the pattern-args.
+                                      (let [value (last args)
+                                            pattern-syms (vec (butlast args))
+                                            ;; Parse params: support (type x) wrapped params
+                                            raw-params (mapv (fn [p]
+                                                              (if (seq? p)
+                                                                (let [sym (last p)]
+                                                                  sym)
+                                                                p))
+                                                            params)
+                                            ;; Build substitution: param → pattern binding target
+                                            substitution (zipmap raw-params pattern-syms)
+                                            ;; For multi-body (do ...), split into constraints + value-producing expr.
+                                            ;; Only the last form is used as the destructuring pattern.
+                                            ;; Earlier forms are constraints applied after destructuring.
+                                            [body-constraints body-value]
+                                            (if (and (seq? body-expr) (= 'do (first body-expr)))
+                                              [(butlast (rest body-expr)) (last body-expr)]
+                                              [[] body-expr])
+                                            ;; Substitute params in the value-producing part to get the destructure pattern
+                                            destruct-pattern (bind/substitute-expr body-value substitution)
+                                            ;; Substitute params in constraint forms too
+                                            destruct-constraints (mapv #(bind/substitute-expr % substitution)
+                                                                       body-constraints)
+                                            ;; Collect param-level constraints: [(wrapper-head target-sym) ...]
+                                            ;; e.g. (defn point [(integer x) (integer y)] {:x x :y y})
+                                            ;; produces [[:integer a] [:integer b]]
+                                            param-constraints (keep (fn [[p target]]
+                                                                      (when (seq? p)
+                                                                        [(first p) target]))
+                                                                    (map vector params pattern-syms))]
+                                        ;; First destructure using the body pattern
+                                        (let [env' (bind/destructure call-env destruct-pattern value)
+                                              ;; Apply body-level constraints (from multi-body defn)
+                                              env' (reduce (fn [e c]
+                                                             (let [e' (bind/bind e c)]
+                                                               ;; Clear any link set by the constraint
+                                                               (dissoc e' :link)))
+                                                           env'
+                                                           destruct-constraints)]
+                                          ;; Then apply param-level type constraints as side-effects only
+                                          ;; (no link setting — just narrow the target's domain)
+                                          (reduce (fn [e [wrapper-head target-sym]]
+                                                    (let [my-pos (tree/position e)
+                                                          [e' path] (bind/ensure-node-abs e target-sym)
+                                                          ;; Look up the wrapper (e.g. integer) to get its type-domain
+                                                          wrapper-node (tree/find e' [wrapper-head])
+                                                          wrapper-resolved (when wrapper-node (bind/resolve wrapper-node))
+                                                          type-dom (:type-domain wrapper-resolved)]
+                                                      (if type-dom
+                                                        ;; Apply type domain constraint directly
+                                                        (let [d (bind/domain-of (tree/root e') path)
+                                                              narrowed (dom/intersect d type-dom)]
+                                                          (if (dom/void? narrowed)
+                                                            (throw (ex-info (str "Contradiction: destructuring type constraint")
+                                                                            {:wrapper wrapper-head :target target-sym}))
+                                                            (let [e'' (bind/set-domain (tree/root e') path narrowed)]
+                                                              (or (tree/cd e'' my-pos) e''))))
+                                                        ;; Not a type domain — fall back to bind (constraint call)
+                                                        (let [constraint-expr (list wrapper-head target-sym)
+                                                              e' (bind/bind e constraint-expr)]
+                                                          ;; Clear any link that was set by the constraint call
+                                                          (dissoc e' :link)))))
+                                                  env'
+                                                  param-constraints)))
+                                      ;; ── Expression position: constructor ──
+                                      ;; Uses call-scope semantics (like :mufl-fn)
+                                      (do
+                                        (when (>= bind/*call-depth* bind/max-call-depth)
+                                          (throw (ex-info (str "Recursion depth limit exceeded (depth=" bind/*call-depth* ")")
+                                                          {:depth bind/*call-depth* :fn cname})))
+                                        (binding [bind/*call-depth* (inc bind/*call-depth*)]
+                                          (let [_ (when (not= (count params) (count args))
+                                                    (throw (ex-info (str "Arity mismatch: expected " (count params)
+                                                                         " args, got " (count args))
+                                                                    {:params params :args args :fn-name cname})))
+                                                caller-pos (tree/position call-env)
+                                                ;; Parse params: support (type x) wrapped params
+                                                raw-params (mapv (fn [p]
+                                                                   (if (seq? p)
+                                                                     (let [sym (last p)]
+                                                                       sym)
+                                                                     p))
+                                                                 params)
+                                                ;; Evaluate arg expressions in the CALLER's scope first
+                                                [env-after-args arg-paths]
+                                                (reduce (fn [[e paths] arg-expr]
+                                                          (let [[e' path] (bind/ensure-node-abs e arg-expr)]
+                                                            [e' (conj paths path)]))
+                                                        [call-env []]
+                                                        args)
+                                                ;; Create a call scope as child of current position
+                                                call-name (gensym "defn_call_")
+                                                env-with-scope (tree/ensure-path env-after-args [call-name])
+                                                call-scope (tree/cd env-with-scope [call-name])
+                                                ;; Link each raw param to the pre-evaluated arg node
+                                                env-bound (reduce (fn [e [param arg-path]]
+                                                                    (let [e (tree/ensure-path e [param])]
+                                                                      (tree/upd e [param]
+                                                                                #(assoc % :link arg-path))))
+                                                                  call-scope
+                                                                  (map vector raw-params arg-paths))
+                                                ;; Apply param-level constraints if params have wrappers
+                                                ;; e.g. (defn point [(integer x) (integer y)] ...)
+                                                env-bound (reduce (fn [e [p arg-path]]
+                                                                    (if (seq? p)
+                                                                      (let [wrapper-head (first p)
+                                                                            param-sym (last p)]
+                                                                        (bind/bind e (list wrapper-head param-sym)))
+                                                                      e))
+                                                                  env-bound
+                                                                  (map vector params arg-paths))
+                                                ;; Create result sub-node and evaluate body there
+                                                result-name (gensym "result_")
+                                                env-with-result (tree/ensure-path env-bound [result-name])
+                                                result-env (tree/cd env-with-result [result-name])
+                                                result (bind/bind result-env body-expr)
+                                                result-pos (tree/position result)]
+                                            ;; The caller links to the result node.
+                                            ;; Only set :link if result has a meaningful value
+                                            ;; (map, vector, domain, or link to elsewhere).
+                                            ;; For constraint-only calls like (> a b), the result
+                                            ;; has no value — just side-effects via propagated constraints.
+                                            (let [result-root (tree/root result)
+                                                  caller (tree/cd result-root caller-pos)
+                                                  target-path (or (:link result) result-pos)
+                                                  result-node (tree/cd result-root target-path)
+                                                  has-value? (or (:domain result-node)
+                                                                 (:map result-node)
+                                                                 (:vector result-node)
+                                                                 (and (:link result-node)
+                                                                      (not= (:link result-node) target-path)))]
+                                              (if has-value?
+                                                (assoc caller :link target-path)
+                                                caller)))))))})
                  (tree/cd my-pos))))})
+
+      ;; defdomain and defc are removed.
+      ;; Use `def` for domain schemas, `defn` for constructors/constraints.
 
       ;; ── count: collection length ────────────────────────────
       ;; (count v) returns the number of elements in a vector or map.
@@ -894,7 +1171,7 @@
              ;; where each ei is (nth coll-expr i)
              (let [children (sort-by ::tree/name
                                      (clojure.core/filter #(integer? (::tree/name %))
-                                               (tree/children coll-node)))
+                                                          (tree/children coll-node)))
                    n (clojure.core/count children)
                    ;; Build the result as a vector of function applications
                    result-exprs (mapv (fn [i]
@@ -930,7 +1207,7 @@
                                      {:coll coll-expr})))
                  children (sort-by ::tree/name
                                    (clojure.core/filter #(integer? (::tree/name %))
-                                             (tree/children coll-node)))
+                                                        (tree/children coll-node)))
                  n (clojure.core/count children)]
              ;; For each element, try applying the predicate.
              ;; Include if it doesn't contradict.
@@ -973,7 +1250,7 @@
                                      {:coll coll-expr})))
                  children (sort-by ::tree/name
                                    (clojure.core/filter #(integer? (::tree/name %))
-                                             (tree/children coll-node)))
+                                                        (tree/children coll-node)))
                  n (clojure.core/count children)]
              ;; Unroll: (f (f (f init e0) e1) e2)
              (let [folded (clojure.core/reduce
@@ -1053,7 +1330,7 @@
                  ;; Get sorted integer children (indices)
                  children (sort-by ::tree/name
                                    (clojure.core/filter #(integer? (::tree/name %))
-                                             (tree/children vec-node)))
+                                                        (tree/children vec-node)))
                  total (clojure.core/count children)]
              (if (<= total n-expr)
                ;; Nothing left — return empty vector
@@ -1112,7 +1389,5 @@
                    root (tree/root anon-env)
                    anon-abs-path (conj my-pos anon)
                    result (tree/cd root my-pos)]
-               (assoc result :link anon-abs-path))))})
-
-      ))
+               (assoc result :link anon-abs-path))))})))
 

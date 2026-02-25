@@ -97,81 +97,83 @@
            (dom/subtract (dom/finite #{1 2 3 "x" "y"}) dom/string-dom)))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Basic defdomain tests
+;; Basic def domain tests (using `def` instead of `defdomain`)
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest defdomain-basic-constraint
+(deftest def-basic-constraint
   (testing "basic domain constrains map values"
     (is (= ["Alice"]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
+           (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age 30}]
                           (Person p)
                           (get p :name)))))))
 
   (testing "domain constraint narrows out-of-domain values"
     (is (= [10]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
+           (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 200)}]
                           (Person p)
                           (get p :age)))))))
 
   (testing "domain constraint eliminates incompatible type values"
     (is (= ["Bob"]
-           (m/query (do (defdomain Named {:name string})
+           (m/query (do (def Named {:name string})
                         (let [p {:name (one-of "Bob" 42)}]
                           (Named p)
                           (get p :name))))))))
 
-(deftest defdomain-contradiction
+(deftest def-contradiction
   (testing "domain constraint with no valid values throws"
     (is (thrown? Exception
-                (m/query (do (defdomain Person {:name string :age (between 0 150)})
+                (m/query (do (def Person {:name string :age (between 0 150)})
                              (let [p {:name 42 :age 30}]
                                (Person p)
                                (get p :name))))))))
 
-(deftest defdomain-with-one-of-fields
+(deftest def-with-one-of-fields
   (testing "domain with one-of field narrows correctly"
     (is (= ["admin" "user"]
-           (m/query (do (defdomain Account {:role (one-of "admin" "user" "guest")})
+           (m/query (do (def Account {:role (one-of "admin" "user" "guest")})
                         (let [a {:role (one-of "admin" "user")}]
                           (Account a)
                           (get a :role))))))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Domain destructuring tests
+;; Constructor destructuring tests (via defn)
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest defdomain-destructuring
-  (testing "domain destructuring binds fields and applies constraints"
+(deftest defn-destructuring
+  (testing "constructor destructuring binds fields and applies constraints"
     (is (= [["Bob" 25]]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
-                        (let [(Person (ks name age)) {:name "Bob" :age 25}]
+           (m/query (do (defn person [name age] {:name (string name) :age (integer age)})
+                        (let [(person name age) {:name "Bob" :age 25}]
                           [name age]))))))
 
-  (testing "domain destructuring narrows values"
+  (testing "constructor destructuring narrows values"
     (is (= [["Alice" 30]]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
-                        (let [(Person (ks name age)) {:name "Alice" :age (one-of 30 200)}]
+           (m/query (do (defn person [name age]
+                          (<= age 150) (>= age 0)
+                          {:name (string name) :age (integer age)})
+                        (let [(person name age) {:name "Alice" :age (one-of 30 200)}]
                           [name age])))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Domain composition tests
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest defdomain-composition
+(deftest def-composition
   (testing "composed domain with 'and' applies both constraints"
     (is (= ["Acme"]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
-                        (defdomain Employee (and Person {:company string}))
+           (m/query (do (def Person {:name string :age (between 0 150)})
+                        (def Employee (and Person {:company string}))
                         (let [e {:name "Alice" :age 30 :company "Acme"}]
                           (Employee e)
                           (get e :company)))))))
 
   (testing "composed domain narrows from parent"
     (is (= [30]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
-                        (defdomain Employee (and Person {:company string}))
+           (m/query (do (def Person {:name string :age (between 0 150)})
+                        (def Employee (and Person {:company string}))
                         (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
                           (Employee e)
                           (get e :age))))))))
@@ -180,10 +182,10 @@
 ;; Domain + arithmetic constraints
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest defdomain-with-arithmetic
+(deftest def-with-arithmetic
   (testing "domain + additional arithmetic constraint"
     (is (= [20 30]
-           (m/query (do (defdomain Person {:name string :age (between 0 150)})
+           (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 20 30 200)}]
                           (Person p)
                           (> (:age p) 15)
@@ -191,7 +193,7 @@
 
   (testing "domain with between field narrowed by equality"
     (is (= [25]
-           (m/query (do (defdomain Person {:name string :age (between 20 30)})
+           (m/query (do (def Person {:name string :age (between 20 30)})
                         (let [p {:name "Bob" :age (one-of 25 35)}]
                           (Person p)
                           (get p :age))))))))
@@ -200,11 +202,11 @@
 ;; Multiple domain constraints on same value
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest defdomain-multiple-constraints
+(deftest def-multiple-constraints
   (testing "two domain constraints narrow together"
     (is (= [30]
-           (m/query (do (defdomain HasName {:name string})
-                        (defdomain HasAge {:age (between 0 150)})
+           (m/query (do (def HasName {:name string})
+                        (def HasAge {:age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 30 200)}]
                           (HasName p)
                           (HasAge p)
@@ -217,14 +219,40 @@
 (deftest type-domain-as-value-in-env
   (testing "string type domain filters one-of"
     (is (= ["hello" "world"]
-           (m/query (do (defdomain Stringy {:val string})
+           (m/query (do (def Stringy {:val string})
                         (let [x {:val (one-of "hello" "world" 42)}]
                           (Stringy x)
                           (get x :val)))))))
 
   (testing "integer type domain filters one-of"
     (is (= [1 2 3]
-           (m/query (do (defdomain IntVal {:val integer})
+           (m/query (do (def IntVal {:val integer})
                         (let [x {:val (one-of 1 2 3 "a" "b")}]
                           (IntVal x)
                           (get x :val))))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; New: vector literal as tuple schema
+;; ════════════════════════════════════════════════════════════════
+
+(deftest def-vector-tuple-schema
+  (testing "vector literal defines tuple domain"
+    (is (= [[1 2]]
+           (m/query (do (def IntPair [integer integer])
+                        (let [v [1 2]]
+                          (IntPair v)
+                          v))))))
+
+  (testing "vector tuple narrows element types"
+    (is (= [[1 "a"] [2 "a"]]
+           (m/query (do (def Mixed [integer string])
+                        (let [v [(one-of 1 2 "x") (one-of "a" 3)]]
+                          (Mixed v)
+                          v))))))
+
+  (testing "def scalar domain"
+    (is (= #{1 2 3}
+           (set (m/query (do (def SmallInt (between 1 3))
+                             (let [x (one-of 1 2 3 4 5)]
+                               (SmallInt x)
+                               x))))))))

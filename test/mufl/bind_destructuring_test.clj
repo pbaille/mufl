@@ -56,30 +56,32 @@
            (m/query (let [(or (ks x) [x]) {:x 42}] x))))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Domain destructuring through :bind
+;; Constructor destructuring through defn :bind
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest domain-destructuring
-  (testing "domain constraint + inner destructuring via ks"
+  (testing "defn constructor destructuring extracts fields"
     (is (= [1]
-           (m/query (defdomain Point {:x (between 0 100) :y (between 0 100)})
-                    (let [(Point (ks x y)) {:x 1 :y 2}] x)))))
+           (m/query (do (defn point [x y] {:x (integer x) :y (integer y)})
+                        (let [(point a b) {:x 1 :y 2}] a))))))
 
-  (testing "domain constraint + inner destructuring via general map"
+  (testing "defn constructor destructuring returns both fields"
     (is (= [[1 2]]
-           (m/query (defdomain Point {:x (between 0 100) :y (between 0 100)})
-                    (let [(Point {:x x :y y}) {:x 1 :y 2}] [x y])))))
+           (m/query (do (defn point [x y] {:x (integer x) :y (integer y)})
+                        (let [(point a b) {:x 1 :y 2}] [a b]))))))
 
-  (testing "domain constraint narrows values in inner pattern"
+  (testing "defn constructor destructuring narrows values"
     (is (= [[1 10] [2 10] [3 10]]
-           (m/query (defdomain SmallPoint {:x (between 1 3) :y (between 0 100)})
-                    (let [(SmallPoint (ks x y)) {:x (one-of 0 1 2 3 4) :y 10}]
-                      [x y])))))
+           (m/query (do (defn small-point [x y]
+                          (>= x 1) (<= x 3)
+                          {:x (integer x) :y (integer y)})
+                        (let [(small-point a b) {:x (one-of 0 1 2 3 4) :y 10}]
+                          [a b]))))))
 
   ;; Domain in expression position still works
   (testing "domain as expression constraint still works"
     (is (= [1 2 3]
-           (m/query (defdomain Small (between 1 3))
+           (m/query (def Small (between 1 3))
                     (let [x (one-of 0 1 2 3 4)]
                       (and (Small x) x)))))))
 

@@ -105,6 +105,32 @@ Constraints on derived values propagate backward to the inputs:
 ;=> [3 6 9 12 15 18]
 ```
 
+`abs` computes absolute value. It propagates bidirectionally — constraining the result narrows both positive and negative possibilities of the input:
+
+```clojure
+(query (abs -5))
+;=> [5]
+
+(query (let [x (one-of -3 -2 -1 0 1 2 3)]
+         (abs x)))
+;=> [0 1 2 3]
+
+;; Constraining (abs x) narrows x to both signs
+(query (let [x (one-of -3 -2 -1 0 1 2 3)]
+         (and (= (abs x) 2) x)))
+;=> [-2 2]
+```
+
+`min` and `max` return the smaller or larger of two values:
+
+```clojure
+(query (min 3 2))
+;=> [2]
+
+(query (max 3 5))
+;=> [5]
+```
+
 ## Distinct
 
 `distinct` says all variables in a vector must take different values.
@@ -163,7 +189,7 @@ When the condition can be decided at bind time (ground values), only the appropr
 
 ## Predicates
 
-Predicates act as constraints — they don't return booleans, they narrow domains. mufl provides numeric predicates (`even`, `odd`, `pos`, `neg`, `zero`) and type constraints (`number`, `string`, `keyword`, `integer`, `boolean`) which also serve as type domains in `defdomain` schemas.
+Predicates act as constraints — they don't return booleans, they narrow domains. mufl provides numeric predicates (`even`, `odd`, `pos`, `neg`, `zero`) and type constraints (`number`, `string`, `keyword`, `integer`, `boolean`) which also serve as type domains in `def` schemas.
 
 ```clojure
 (query (let [x (between 1 10)]
@@ -199,7 +225,7 @@ Predicates compose naturally with `and` and `or`:
 ;=> [-3 -1 2 4]
 ```
 
-You can also define your own predicates with `defc` (covered below) — predicates in mufl are just constraint functions.
+You can also define your own predicates with `defn` (covered below) — predicates in mufl are just constraint functions.
 
 ## Functions
 
@@ -271,6 +297,40 @@ Nested collections work too:
 (query (let [m {:a {:b 42}}]
          (:b (:a m))))
 ;=> [42]
+```
+
+`count` returns the number of elements in a vector or map:
+
+```clojure
+(query (let [v [10 20 30]] (count v)))
+;=> [3]
+
+(query (let [m {:x 1 :y 2}] (count m)))
+;=> [2]
+```
+
+It works on rest-pattern results too:
+
+```clojure
+(query (let [[a b . xs] [1 2 3 4 5]] (count xs)))
+;=> [3]
+```
+
+`drop` removes the first n elements from a vector:
+
+```clojure
+(query (let [v [1 2 3 4 5]] (drop 2 v)))
+;=> [[3 4 5]]
+```
+
+`dissoc` removes keys from a map. It supports multiple keys:
+
+```clojure
+(query (let [m {:x 1 :y 2 :z 3}] (dissoc m :x)))
+;=> [{:y 2 :z 3}]
+
+(query (let [m {:x 1 :y 2 :z 3}] (dissoc m :x :y)))
+;=> [{:z 3}]
 ```
 
 ## Destructuring
@@ -410,12 +470,12 @@ The general form is `[h₁ h₂ ... . rest t₁ t₂ ...]` where `h` elements bi
 ;=> [[{:y 2 :z 3} {:x 1 :y 2 :z 3}]]
 ```
 
-## Constraint functions (defc)
+## Named constraints (defn)
 
-`defc` defines a reusable constraint. Unlike `fn`, it doesn't create a call scope — it operates directly on the caller's variables via macro-expansion.
+`defn` defines a reusable constraint — a named function that narrows the caller's variables directly.
 
 ```clojure
-(query (defc positive [x] (> x 0))
+(query (defn positive [x] (> x 0))
        (let [n (one-of -1 0 1 2 3)]
          (positive n)
          n))
@@ -425,7 +485,7 @@ The general form is `[h₁ h₂ ... . rest t₁ t₂ ...]` where `h` elements bi
 Multi-parameter constraint functions:
 
 ```clojure
-(query (defc sums-to [a b target]
+(query (defn sums-to [a b target]
          (= (+ a b) target))
        (let [x (between 1 5)
              y (between 1 5)]
@@ -437,8 +497,8 @@ Multi-parameter constraint functions:
 Constraint functions compose freely:
 
 ```clojure
-(query (defc positive [x] (> x 0))
-       (defc ordered [a b] (< a b))
+(query (defn positive [x] (> x 0))
+       (defn ordered [a b] (< a b))
        (let [x (one-of -1 0 1 2 3)
              y (one-of -1 0 1 2 3)]
          (positive x)
@@ -448,12 +508,12 @@ Constraint functions compose freely:
 ;=> [[1 2] [1 3] [2 3]]
 ```
 
-## Domains (defdomain)
+## Domains (def)
 
-`defdomain` names a structural contract — a map schema with typed or constrained fields.
+`def` names a structural contract — a map schema, tuple, or other domain.
 
 ```clojure
-(query (defdomain Person {:name string :age (between 0 150)})
+(query (def Person {:name string :age (between 0 150)})
        (let [p {:name "Alice" :age (one-of 10 25 200)}]
          (Person p)
          (:age p)))
@@ -465,8 +525,8 @@ Constraint functions compose freely:
 Domains compose with `and`:
 
 ```clojure
-(query (defdomain Person {:name string :age (between 0 150)})
-       (defdomain Employee (and Person {:company string}))
+(query (def Person {:name string :age (between 0 150)})
+       (def Employee (and Person {:company string}))
        (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
          (Employee e)
          (:age e)))
@@ -476,17 +536,27 @@ Domains compose with `and`:
 Domains work as destructuring patterns:
 
 ```clojure
-(query (defdomain Person {:name string :age (between 0 150)})
+(query (def Person {:name string :age (between 0 150)})
        (let [(Person (ks name age)) {:name "Bob" :age 25}]
          [name age]))
 ;=> [["Bob" 25]]
 ```
 
+Vector literals define tuple domains — no need for the `tuple` wrapper:
+
+```clojure
+(query (def Point [integer integer])
+       (let [p [(one-of 3 "x") (one-of 4 "y")]]
+         (Point p)
+         p))
+;=> [[3 4]]
+```
+
 Domains and constraint functions combine:
 
 ```clojure
-(query (defdomain Person {:name string :age (between 0 150)})
-       (defc adult [p] (>= (:age p) 18))
+(query (def Person {:name string :age (between 0 150)})
+       (defn adult [p] (>= (:age p) 18))
        (let [p {:name "Alice" :age (one-of 10 25 30)}]
          (Person p)
          (adult p)
@@ -512,17 +582,17 @@ Type constructors constrain entire collections at once. They walk the structural
 Works with named domains too:
 
 ```clojure
-(query (defdomain Named {:name string})
+(query (def Named {:name string})
        (let [people [{:name (one-of "Alice" 42)} {:name (one-of "Bob" 99)}]]
          (vector-of Named people)
          people))
 ;=> [[{:name "Alice"} {:name "Bob"}]]
 ```
 
-In `defdomain` schemas:
+In `def` schemas:
 
 ```clojure
-(query (defdomain IntVec (vector-of integer))
+(query (def IntVec (vector-of integer))
        (let [v [(one-of 1 "x") (one-of 2 "y")]]
          (IntVec v)
          v))
@@ -540,10 +610,10 @@ In `defdomain` schemas:
 ;=> [[42 "hello" true]]
 ```
 
-In `defdomain` schemas:
+In `def` schemas:
 
 ```clojure
-(query (defdomain Point (tuple [integer integer]))
+(query (def Point (tuple [integer integer]))
        (let [p [(one-of 3 "x") (one-of 4 "y")]]
          (Point p)
          p))
@@ -561,10 +631,10 @@ In `defdomain` schemas:
 ;=> [{:a 1 :b 2}]
 ```
 
-In `defdomain` schemas:
+In `def` schemas:
 
 ```clojure
-(query (defdomain Scores (map-of keyword integer))
+(query (def Scores (map-of keyword integer))
        (let [s {:x (one-of 10 "a") :y (one-of 20 "b")}]
          (Scores s)
          s))
@@ -576,8 +646,8 @@ In `defdomain` schemas:
 Type constructors compose naturally. A vector of named domains, or a domain containing a `vector-of` field:
 
 ```clojure
-(query (defdomain Student (and {:name string}
-                               {:scores (vector-of integer)}))
+(query (def Student (and {:name string}
+                         {:scores (vector-of integer)}))
        (let [s {:name "Alice" :scores [(one-of 90 "x") (one-of 80 "y")]}]
          (Student s)
          [(get s :name) (get s :scores)]))
@@ -622,7 +692,7 @@ What makes HOFs interesting in mufl is how they compose with non-ground values a
 Filter with a custom constraint function:
 
 ```clojure
-(query (do (defc big [x] (> x 3))
+(query (do (defn big [x] (> x 3))
            (let [v [1 2 3 4 5]
                  bigs (filter big v)]
              bigs)))
@@ -672,6 +742,8 @@ No loops, no generate-and-test. You declare what a Pythagorean triple *is*, and 
 
 `query` returns the evaluated result expression for each solution. Sometimes you want to see *all* the variable bindings — not just the expression you returned. `query+` does exactly this: it returns a vector of maps, one per solution, containing every user-defined binding.
 
+> **Lazy queries:** When you don't need *all* solutions — or the domain is too large to enumerate eagerly — see [Lazy Enumeration](lazy-enumeration.md) for `query-lazy` (lazy seq of solutions) and `query1` (one solution at a time with a continuation).
+
 ```clojure
 (query+ (let [x (one-of 1 2 3)
               y (one-of 1 2 3)]
@@ -688,10 +760,10 @@ Compare with `query`, which only returns the result expression:
 ;=> [[1 2] [1 3] [2 3]]
 ```
 
-`query+` is useful for inspection — you can see how every variable was bound in each solution, not just the ones you chose to return. Function definitions (`fn`), constraint functions (`defc`), and domain definitions (`defdomain`) are excluded — only value bindings appear.
+`query+` is useful for inspection — you can see how every variable was bound in each solution, not just the ones you chose to return. Function definitions (`fn`), named constraints (`defn`), and domain definitions (`def`) are excluded — only value bindings appear.
 
 ```clojure
-(query+ (defc positive [x] (> x 0))
+(query+ (defn positive [x] (> x 0))
         (let [n (one-of -2 -1 0 1 2 3)]
           (positive n)
           n))
@@ -710,14 +782,25 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `or` | Union of domains across branches |
 | `if` / `cond` | Branching — eager when decidable, deferred when not |
 | `fn` | Closure with constraint propagation through the body |
-| `defc` | Reusable constraint (macro-expanded, no call scope) |
-| `defdomain` | Named structural contract for maps and collections |
+| `defn` | Named reusable constraint function |
+| `def` | Named domain — structural contract for maps, tuples, collections |
 | `vector-of` | Constrain all vector elements to a type |
 | `tuple` | Per-position type constraints on a vector |
 | `map-of` | Constrain all map keys and values |
+| `abs` | Absolute value — propagates bidirectionally |
+| `min` / `max` | Two-argument min/max on values |
+| `count` | Number of elements in a vector or map |
+| `drop` | Drop first n elements from a vector |
+| `dissoc` | Remove keys from a map |
 | Predicates | `even`, `odd`, `pos`, `neg`, `zero` |
 | Type constraints | `string`, `integer`, `number`, `keyword`, `boolean` (also usable as type domains) |
 | `query` | Bind + solve → all solutions (implicit `do` for multiple body forms) |
 | `query+` | Like `query`, but returns full environments as maps |
+| `query-lazy` | Lazy seq of solutions — compute only what you `take` ([details](lazy-enumeration.md)) |
+| `query1` | One solution + continuation — step through solutions manually ([details](lazy-enumeration.md)) |
 
 The mental model: you're not computing a result step by step — you're *describing* the space of valid answers, and the system narrows it down for you.
+
+---
+
+For a deeper look at how domains, constraint propagation, and the internal algebra work under the hood, see [Domain Algebra](domain-algebra.md).

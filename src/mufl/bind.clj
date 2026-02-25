@@ -87,11 +87,12 @@
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom))
+    (if (or (and (dom/finite? a-dom) (dom/finite? b-dom))
+            (dom/range? a-dom) (dom/range? b-dom))
       (let [b-max (dom/domain-max b-dom)
             a-min (dom/domain-min a-dom)
-            a-new (dom/domain-below a-dom b-max)
-            b-new (dom/domain-above b-dom a-min)]
+            a-new (if b-max (dom/domain-below a-dom b-max) a-dom)
+            b-new (if a-min (dom/domain-above b-dom a-min) b-dom)]
         (apply-narrowings env [[a-path a-new] [b-path b-new]]))
       {:env env :changed []})))
 
@@ -106,11 +107,12 @@
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom))
+    (if (or (and (dom/finite? a-dom) (dom/finite? b-dom))
+            (dom/range? a-dom) (dom/range? b-dom))
       (let [b-max (dom/domain-max b-dom)
             a-min (dom/domain-min a-dom)
-            a-new (dom/domain-at-most a-dom b-max)
-            b-new (dom/domain-at-least b-dom a-min)]
+            a-new (if b-max (dom/domain-at-most a-dom b-max) a-dom)
+            b-new (if a-min (dom/domain-at-least b-dom a-min) b-dom)]
         (apply-narrowings env [[a-path a-new] [b-path b-new]]))
       {:env env :changed []})))
 
@@ -119,15 +121,191 @@
   [env [a-path b-path]]
   (narrow-lte env [b-path a-path]))
 
+(def ^:private composite-kinds
+  "Set of composite domain kinds."
+  #{:vector-of :tuple :map-of})
+
+(defn apply-composite-constraint
+  "Apply a composite domain's structural constraints to a collection node.
+   Returns {:env env' :changed [paths...]} or nil on contradiction.
+   
+   For :vector-of — intersects each child's domain with the element domain.
+   For :tuple — checks length, intersects each position's domain.
+   For :map-of — validates keys, intersects each value's domain."
+  [env target-path composite-dom]
+  (let [target-node (resolve-at env target-path)
+        target-resolved-path (tree/position target-node)]
+    (case (:kind composite-dom)
+
+      :vector-of
+      (if-not (:vector target-node)
+        nil ;; contradiction: composite domain on non-vector
+        (let [children (sort-by ::tree/name
+                                (filter #(integer? (::tree/name %))
+                                        (tree/children target-node)))
+              elem-dom (:element composite-dom)]
+          (reduce (fn [{:keys [env changed]} child]
+                    (let [resolved-child (resolve child)
+                          child-path (tree/position resolved-child)
+                          child-dom (or (:domain resolved-child) dom/any)
+                          narrowed (dom/intersect child-dom elem-dom)]
+                      (cond
+                        (dom/void? narrowed)
+                        (reduced nil)
+
+                        (= narrowed child-dom)
+                        ;; No change, but check if child is a collection node
+                        ;; and the element domain is composite (nested case)
+                        (if (and (composite-kinds (:kind elem-dom))
+                                 (or (:vector resolved-child) (:map resolved-child)))
+                          (let [inner-result (apply-composite-constraint env child-path elem-dom)]
+                            (if (nil? inner-result)
+                              (reduced nil)
+                              {:env (:env inner-result)
+                               :changed (into changed (:changed inner-result))}))
+                          {:env env :changed changed})
+
+                        :else
+                        (let [env' (set-domain env child-path narrowed)
+                              ;; Recurse for nested composites
+                              env' (if (and (composite-kinds (:kind elem-dom))
+                                            (or (:vector resolved-child) (:map resolved-child)))
+                                     (let [inner-result (apply-composite-constraint env' child-path elem-dom)]
+                                       (if (nil? inner-result)
+                                         (reduced nil)
+                                         (:env inner-result)))
+                                     env')]
+                          (if (reduced? env')
+                            env' ;; propagate reduced nil
+                            {:env env' :changed (conj changed child-path)})))))
+                  {:env env :changed []}
+                  children)))
+
+      :tuple
+      (if-not (:vector target-node)
+        nil ;; contradiction: tuple on non-vector
+        (let [children (sort-by ::tree/name
+                                (filter #(integer? (::tree/name %))
+                                        (tree/children target-node)))
+              elem-doms (:elements composite-dom)
+              n (count children)
+              expected (count elem-doms)]
+          (if (not= n expected)
+            nil ;; contradiction: length mismatch
+            (reduce (fn [{:keys [env changed]} [idx elem-dom]]
+                      (let [child (nth children idx)
+                            resolved-child (resolve child)
+                            child-path (tree/position resolved-child)
+                            child-dom (or (:domain resolved-child) dom/any)
+                            narrowed (dom/intersect child-dom elem-dom)]
+                        (cond
+                          (dom/void? narrowed)
+                          (reduced nil)
+
+                          (= narrowed child-dom)
+                          (if (and (composite-kinds (:kind elem-dom))
+                                   (or (:vector resolved-child) (:map resolved-child)))
+                            (let [inner-result (apply-composite-constraint env child-path elem-dom)]
+                              (if (nil? inner-result)
+                                (reduced nil)
+                                {:env (:env inner-result)
+                                 :changed (into changed (:changed inner-result))}))
+                            {:env env :changed changed})
+
+                          :else
+                          (let [env' (set-domain env child-path narrowed)
+                                env' (if (and (composite-kinds (:kind elem-dom))
+                                              (or (:vector resolved-child) (:map resolved-child)))
+                                       (let [inner-result (apply-composite-constraint env' child-path elem-dom)]
+                                         (if (nil? inner-result)
+                                           (reduced nil)
+                                           (:env inner-result)))
+                                       env')]
+                            (if (reduced? env')
+                              env'
+                              {:env env' :changed (conj changed child-path)})))))
+                    {:env env :changed []}
+                    (map-indexed vector elem-doms)))))
+
+      :map-of
+      (if-not (:map target-node)
+        nil ;; contradiction: map-of on non-map
+        (let [children (tree/children target-node)
+              key-dom (:key composite-dom)
+              val-dom (:value composite-dom)]
+          ;; Validate keys
+          (if (some (fn [child]
+                      (let [k (::tree/name child)]
+                        (not (dom/contains-val? key-dom k))))
+                    children)
+            nil ;; contradiction: key doesn't match
+            (reduce (fn [{:keys [env changed]} child]
+                      (let [resolved-child (resolve child)
+                            child-path (tree/position resolved-child)
+                            child-dom (or (:domain resolved-child) dom/any)
+                            narrowed (dom/intersect child-dom val-dom)]
+                        (cond
+                          (dom/void? narrowed)
+                          (reduced nil)
+
+                          (= narrowed child-dom)
+                          (if (and (composite-kinds (:kind val-dom))
+                                   (or (:vector resolved-child) (:map resolved-child)))
+                            (let [inner-result (apply-composite-constraint env child-path val-dom)]
+                              (if (nil? inner-result)
+                                (reduced nil)
+                                {:env (:env inner-result)
+                                 :changed (into changed (:changed inner-result))}))
+                            {:env env :changed changed})
+
+                          :else
+                          (let [env' (set-domain env child-path narrowed)
+                                env' (if (and (composite-kinds (:kind val-dom))
+                                              (or (:vector resolved-child) (:map resolved-child)))
+                                       (let [inner-result (apply-composite-constraint env' child-path val-dom)]
+                                         (if (nil? inner-result)
+                                           (reduced nil)
+                                           (:env inner-result)))
+                                       env')]
+                            (if (reduced? env')
+                              env'
+                              {:env env' :changed (conj changed child-path)})))))
+                    {:env env :changed []}
+                    children))))
+
+      ;; Unknown composite kind — no-op
+      {:env env :changed []})))
+
 (defn narrow-eq
-  "Narrow for a = b (unification). Both domains must intersect."
+  "Narrow for a = b (unification). Both domains must intersect.
+   When one side has a composite domain (vector-of, tuple, map-of) and
+   the other side is a collection node, applies the composite domain's
+   structural constraints to the collection's children."
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
-        shared (dom/intersect a-dom b-dom)]
-    (if (dom/void? shared)
-      nil
-      (apply-narrowings env [[a-path shared] [b-path shared]]))))
+        a-node (resolve-at env a-path)
+        b-node (resolve-at env b-path)
+        a-composite? (composite-kinds (:kind a-dom))
+        b-composite? (composite-kinds (:kind b-dom))
+        a-collection? (or (:vector a-node) (:map a-node))
+        b-collection? (or (:vector b-node) (:map b-node))]
+    (cond
+      ;; Composite on a-side, collection on b-side → apply a's domain to b's structure
+      (and a-composite? b-collection?)
+      (apply-composite-constraint env (tree/position b-node) a-dom)
+
+      ;; Composite on b-side, collection on a-side → apply b's domain to a's structure
+      (and b-composite? a-collection?)
+      (apply-composite-constraint env (tree/position a-node) b-dom)
+
+      ;; Both composite (no collection nodes) → standard domain intersection
+      ;; Default: existing scalar path
+      :else
+      (let [shared (dom/intersect a-dom b-dom)]
+        (if (dom/void? shared)
+          nil
+          (apply-narrowings env [[a-path shared] [b-path shared]]))))))
 
 (defn narrow-neq
   "Narrow for a != b. Only narrows when one side is singleton."
@@ -151,8 +329,10 @@
   [env [a-path b-path c-path]]
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
-        c-dom (domain-of env c-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+        c-dom (domain-of env c-path)
+        has-range? (or (dom/range? a-dom) (dom/range? b-dom) (dom/range? c-dom))]
+    (if (or (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+            has-range?)
       (let [;; c must be in {a+b for a in A, b in B}
             possible-c (dom/domain-add a-dom b-dom)
             c-new (dom/intersect c-dom possible-c)
@@ -171,10 +351,11 @@
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
         c-dom (domain-of env c-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+    (cond
+      ;; All materializable — use members for precise narrowing
+      (and (dom/materializable? a-dom) (dom/materializable? b-dom) (dom/materializable? c-dom))
       (let [possible-c (dom/domain-mul a-dom b-dom)
             c-new (dom/intersect c-dom possible-c)
-            ;; filter a to values where there exists a b giving a valid c
             c-vals (dom/members c-new)
             b-vals (dom/members b-dom)
             a-new (dom/domain-filter a-dom
@@ -183,6 +364,14 @@
             b-new (dom/domain-filter b-dom
                                      (fn [b] (some #(c-vals (* % b)) a-vals)))]
         (apply-narrowings env [[a-path a-new] [b-path b-new] [c-path c-new]]))
+
+      ;; Range involved but not materializable — use bounds-based narrowing
+      (or (dom/range? a-dom) (dom/range? b-dom) (dom/range? c-dom))
+      (let [possible-c (dom/domain-mul a-dom b-dom)
+            c-new (dom/intersect c-dom possible-c)]
+        (apply-narrowings env [[c-path c-new]]))
+
+      :else
       {:env env :changed []})))
 
 (defn narrow-minus
@@ -191,8 +380,10 @@
   ;; a - b = c  ⟺  a = c + b  ⟺  c = a - b  ⟺  b = a - c
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
-        c-dom (domain-of env c-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+        c-dom (domain-of env c-path)
+        has-range? (or (dom/range? a-dom) (dom/range? b-dom) (dom/range? c-dom))]
+    (if (or (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+            has-range?)
       (let [possible-c (dom/domain-sub a-dom b-dom)
             c-new (dom/intersect c-dom possible-c)
             possible-a (dom/domain-add c-new b-dom)
@@ -208,7 +399,7 @@
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
         c-dom (domain-of env c-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+    (if (and (dom/materializable? a-dom) (dom/materializable? b-dom) (dom/materializable? c-dom))
       (let [c-vals (dom/members c-dom)
             b-vals (disj (dom/members b-dom) 0)
             ;; c must be achievable
@@ -230,7 +421,7 @@
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
         c-dom (domain-of env c-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? b-dom) (dom/finite? c-dom))
+    (if (and (dom/materializable? a-dom) (dom/materializable? b-dom) (dom/materializable? c-dom))
       (let [c-vals (dom/members c-dom)
             b-vals (disj (dom/members b-dom) 0)
             possible-c (dom/domain-div a-dom (dom/finite b-vals))
@@ -287,7 +478,7 @@
   [env [a-path c-path]]
   (let [a-dom (domain-of env a-path)
         c-dom (domain-of env c-path)]
-    (if (and (dom/finite? a-dom) (dom/finite? c-dom))
+    (if (and (dom/materializable? a-dom) (dom/materializable? c-dom))
       (let [;; c must be achievable from a
             possible-c (dom/finite (set (map #(Math/abs (long %)) (dom/members a-dom))))
             c-new (dom/intersect c-dom possible-c)
@@ -427,7 +618,7 @@
 (defn substitute-expr
   "Walk an expression tree, replacing occurrences of symbols in the
    substitution map with their replacement expressions.
-   Used by defc for macro-expansion of constraint functions."
+   Used by defn/defc for macro-expansion of constraint functions."
   [expr subs-map]
   (cond
     (symbol? expr)   (get subs-map expr expr)
@@ -516,6 +707,10 @@
    Returns the env with all bindings established."
   [env pattern expr]
   (cond
+    ;; Symbol pattern: bind sym to expr (base case for nested destructuring)
+    (symbol? pattern)
+    (bind env pattern expr)
+
     ;; Map destructuring: {:key1 pat1 :key2 pat2 . rest}
     ;; General patterns + optional dot rest. No :keys or :as sugar.
     ;; Use (as m {:key pat}) operator for whole-value capture.
@@ -623,7 +818,7 @@
                           (map-indexed vector tail-positionals))
               ;; Bind middle/rest as a slice: build vector of (nth tmp i) for range [middle-start, middle-end)
               middle-exprs (mapv (fn [i] (list 'nth tmp i))
-                                (clojure.core/range middle-start middle-end))]
+                                 (clojure.core/range middle-start middle-end))]
           (if (symbol? rest-pattern)
             (bind env rest-pattern (vec middle-exprs))
             (destructure env rest-pattern (vec middle-exprs))))
@@ -713,6 +908,7 @@
    - `(range lo hi)` → int-range domain
    - `(one-of a b c)` → finite domain
    - `{:key1 type1 :key2 type2}` → map schema (structural domain)
+   - `[type1 type2 ...]` → tuple schema (sugar for (tuple [...]))
    - `(and DomainName {:extra-key type})` → composed domain (intersection)
    - `DomainName` → reference to another defined domain"
   [env schema-expr]
@@ -726,7 +922,7 @@
           (:type-domain resolved)
           {:kind :type-constraint :domain (:type-domain resolved)}
 
-          ;; Reference to another defdomain
+          ;; Reference to another domain def
           (:domain-def resolved)
           (:domain-def resolved)
 
@@ -735,6 +931,15 @@
                           {:sym schema-expr}))))
       (throw (ex-info (str "Unresolved domain type: " schema-expr)
                       {:sym schema-expr})))
+
+    ;; Vector literal → tuple schema (sugar for (tuple [t1 t2 ...]))
+    (vector? schema-expr)
+    (let [elem-schemas (mapv #(resolve-domain-schema env %) schema-expr)]
+      (if (every? #(= :type-constraint (:kind %)) elem-schemas)
+        {:kind :type-constraint
+         :domain (dom/tuple-dom (mapv :domain elem-schemas))}
+        {:kind :tuple-schema
+         :element-schemas elem-schemas}))
 
     ;; Map literal → structural (map) domain
     (map? schema-expr)
@@ -754,21 +959,37 @@
              :schemas (mapv #(resolve-domain-schema env %) args)}
 
         ;; Type constructor schemas for collections
-        vector-of (let [[elem-type] args]
-                    {:kind :vector-of-schema
-                     :element-schema (resolve-domain-schema env elem-type)})
+        ;; When all element schemas are :type-constraint, produce composite domains directly.
+        ;; Otherwise, fall back to schema kinds for apply-domain-constraint to handle.
+        vector-of (let [[elem-type] args
+                         elem-schema (resolve-domain-schema env elem-type)]
+                    (if (= :type-constraint (:kind elem-schema))
+                      {:kind :type-constraint
+                       :domain (dom/vector-of-dom (:domain elem-schema))}
+                      {:kind :vector-of-schema
+                       :element-schema elem-schema}))
 
         tuple (let [[types-vec] args]
                 (when-not (vector? types-vec)
                   (throw (ex-info "tuple schema requires a vector of types"
                                   {:form schema-expr})))
-                {:kind :tuple-schema
-                 :element-schemas (mapv #(resolve-domain-schema env %) types-vec)})
+                (let [elem-schemas (mapv #(resolve-domain-schema env %) types-vec)]
+                  (if (every? #(= :type-constraint (:kind %)) elem-schemas)
+                    {:kind :type-constraint
+                     :domain (dom/tuple-dom (mapv :domain elem-schemas))}
+                    {:kind :tuple-schema
+                     :element-schemas elem-schemas})))
 
-        map-of (let [[key-type val-type] args]
-                 {:kind :map-of-schema
-                  :key-schema (resolve-domain-schema env key-type)
-                  :value-schema (resolve-domain-schema env val-type)})
+        map-of (let [[key-type val-type] args
+                      key-schema (resolve-domain-schema env key-type)
+                      val-schema (resolve-domain-schema env val-type)]
+                 (if (and (= :type-constraint (:kind key-schema))
+                          (= :type-constraint (:kind val-schema)))
+                   {:kind :type-constraint
+                    :domain (dom/map-of-dom (:domain key-schema) (:domain val-schema))}
+                   {:kind :map-of-schema
+                    :key-schema key-schema
+                    :value-schema val-schema}))
 
         (throw (ex-info (str "Unknown domain schema form: " head)
                         {:form schema-expr}))))
@@ -789,23 +1010,46 @@
     (letfn [(apply-schema [env target-path schema]
               (case (:kind schema)
                 ;; Simple type/value constraint → intersect domain
+                ;; For composite domains, delegate to apply-composite-constraint
                 :type-constraint
-                (let [env-root (tree/root env)
-                      current-dom (domain-of env-root target-path)
-                      narrowed (dom/intersect current-dom (:domain schema))]
-                  (if (dom/void? narrowed)
-                    (throw (ex-info "Domain constraint contradiction"
-                                    {:path target-path :domain (:domain schema)
-                                     :current current-dom}))
-                    (let [env' (set-domain env-root target-path narrowed)]
-                      ;; Propagate any watchers
-                      (let [node (tree/cd env' target-path)
-                            watchers (:watched-by node)]
-                        (if (seq watchers)
-                          (or (propagate env' (vec watchers))
-                              (throw (ex-info "Contradiction during domain propagation"
-                                              {:path target-path})))
-                          env')))))
+                (let [constraint-dom (:domain schema)]
+                  (if (composite-kinds (:kind constraint-dom))
+                    ;; Composite domain → apply structural constraints
+                    (let [env-root (tree/root env)
+                          result (apply-composite-constraint env-root target-path constraint-dom)]
+                      (if-not result
+                        (throw (ex-info "Domain constraint contradiction"
+                                        {:path target-path :domain constraint-dom}))
+                        (let [env' (:env result)
+                              changed (:changed result)]
+                          ;; Propagate watchers for all changed paths
+                          (reduce (fn [e path]
+                                    (let [node (tree/cd e path)
+                                          watchers (:watched-by node)]
+                                      (if (seq watchers)
+                                        (or (propagate e (vec watchers))
+                                            (throw (ex-info "Contradiction during domain propagation"
+                                                            {:path path})))
+                                        e)))
+                                  env'
+                                  changed))))
+                    ;; Scalar domain → existing intersect logic
+                    (let [env-root (tree/root env)
+                          current-dom (domain-of env-root target-path)
+                          narrowed (dom/intersect current-dom constraint-dom)]
+                      (if (dom/void? narrowed)
+                        (throw (ex-info "Domain constraint contradiction"
+                                        {:path target-path :domain constraint-dom
+                                         :current current-dom}))
+                        (let [env' (set-domain env-root target-path narrowed)]
+                          ;; Propagate any watchers
+                          (let [node (tree/cd env' target-path)
+                                watchers (:watched-by node)]
+                            (if (seq watchers)
+                              (or (propagate env' (vec watchers))
+                                  (throw (ex-info "Contradiction during domain propagation"
+                                                  {:path target-path})))
+                              env')))))))
 
                 ;; Map schema → ensure target is a map, constrain each field
                 :map-schema
@@ -847,7 +1091,7 @@
                   (let [target-resolved-path (tree/position target-node)
                         children (sort-by ::tree/name
                                           (clojure.core/filter #(integer? (::tree/name %))
-                                                    (tree/children target-node)))
+                                                               (tree/children target-node)))
                         elem-schema (:element-schema schema)]
                     (reduce (fn [env-root child]
                               (let [resolved-child (resolve child)
@@ -866,7 +1110,7 @@
                   (let [target-resolved-path (tree/position target-node)
                         children (sort-by ::tree/name
                                           (clojure.core/filter #(integer? (::tree/name %))
-                                                    (tree/children target-node)))
+                                                               (tree/children target-node)))
                         elem-schemas (:element-schemas schema)
                         n (count children)
                         expected (count elem-schemas)]
@@ -995,19 +1239,6 @@
                          ;; If result has a link, follow it for the final target
                          target-path (or (:link result) result-pos)]
                      (assoc caller :link target-path)))))
-
-             ;; User-defined constraint function with :defc
-             (:defc node)
-             (let [{:keys [params body]} (:defc node)
-                   _ (when (not= (count params) (count args))
-                       (throw (ex-info (str "Arity mismatch in defc: expected " (count params)
-                                            " args, got " (count args))
-                                       {:params params :args args :fn-name head})))
-                   ;; Macro-expand: substitute param symbols with arg expressions
-                   substitution (zipmap params args)
-                   substituted-body (substitute-expr body substitution)]
-               ;; Bind the substituted body in the caller scope directly
-               (bind env substituted-body))
 
              :else
              (throw (ex-info (str "No :bind for form: " head) {:head head}))))

@@ -238,28 +238,30 @@
           (m/query (let [(or [a b] (ks x)) "not a map or vec"] a))))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; 7. Domain + destructuring composition
+;; 7. Constructor + destructuring composition
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest domain-as-composition
-  (testing "(as p (Point (ks x y))) — as wrapping domain wrapping ks"
+  (testing "(as p (point x y)) — as wrapping constructor destructor"
     (is (= [[{:x 5 :y 10} 5 10]]
-           (m/query (defdomain Point {:x (between 0 100) :y (between 0 100)})
-                    (let [(as p (Point (ks x y))) {:x 5 :y 10}]
-                      [p x y])))))
+           (m/query (do (defn point [x y] {:x (integer x) :y (integer y)})
+                        (let [(as p (point x y)) {:x 5 :y 10}]
+                          [p x y]))))))
 
-  (testing "domain constraint narrows through as"
+  (testing "constructor constraint narrows through as"
     (is (= [[{:x 1 :y 2} 1 2] [{:x 2 :y 2} 2 2] [{:x 3 :y 2} 3 2]]
-           (m/query (defdomain SmallPoint {:x (between 1 3) :y (between 0 100)})
-                    (let [(as p (SmallPoint (ks x y))) {:x (one-of 0 1 2 3 4) :y 2}]
-                      [p x y]))))))
+           (m/query (do (defn small-point [x y]
+                          (>= x 1) (<= x 3)
+                          {:x (integer x) :y (integer y)})
+                        (let [(as p (small-point x y)) {:x (one-of 0 1 2 3 4) :y 2}]
+                          [p x y])))))))
 
 (deftest domain-with-map-pattern
-  (testing "(Point {:x x :y y}) — domain + general map pattern"
+  (testing "defn constructor destructures to map fields"
     (is (= [[1 2]]
-           (m/query (defdomain Point {:x (between 0 100) :y (between 0 100)})
-                    (let [(Point {:x x :y y}) {:x 1 :y 2}]
-                      [x y]))))))
+           (m/query (do (defn point [x y] {:x (integer x) :y (integer y)})
+                        (let [(point x y) {:x 1 :y 2}]
+                          [x y])))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; 8. Multiple dot rests in nested positions
@@ -499,11 +501,11 @@
                       [m x b]))))))
 
 (deftest domain-inside-vector
-  (testing "[point b] where point is domain-destructured"
+  (testing "[point b] where point is constructor-destructured"
     (is (= [[1 2 99]]
-           (m/query (defdomain Point {:x (between 0 100) :y (between 0 100)})
-                    (let [[(Point (ks x y)) b] [{:x 1 :y 2} 99]]
-                      [x y b]))))))
+           (m/query (do (defn point [x y] {:x (integer x) :y (integer y)})
+                        (let [[(point x y) b] [{:x 1 :y 2} 99]]
+                          [x y b])))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; 19. Metadata propagation (list pattern :destructuring flag)
@@ -601,14 +603,18 @@
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest domain-destructure-narrows-values
-  (testing "domain constraint + ks narrows out-of-range values"
+  (testing "constructor constraint narrows out-of-range values"
     (is (= [[1 10] [2 10] [3 10]]
-           (m/query (defdomain SmallX {:x (between 1 3) :y (between 0 100)})
-                    (let [(SmallX (ks x y)) {:x (one-of 0 1 2 3 4) :y 10}]
-                      [x y])))))
+           (m/query (do (defn small-x [x y]
+                          (>= x 1) (<= x 3)
+                          {:x (integer x) :y (integer y)})
+                        (let [(small-x x y) {:x (one-of 0 1 2 3 4) :y 10}]
+                          [x y]))))))
 
-  (testing "domain + as + ks all working together"
+  (testing "constructor + as — narrows and captures whole"
     (is (= [[{:x 2 :y 10} 2 10] [{:x 3 :y 10} 3 10]]
-           (m/query (defdomain SmallX {:x (between 1 3) :y (between 0 100)})
-                    (let [(as m (SmallX (ks x y))) {:x (one-of 0 1 2 3 4) :y 10}]
-                      (and (> x 1) [m x y])))))))
+           (m/query (do (defn small-x [x y]
+                          (>= x 1) (<= x 3)
+                          {:x (integer x) :y (integer y)})
+                        (let [(as m (small-x x y)) {:x (one-of 0 1 2 3 4) :y 10}]
+                          (and (> x 1) [m x y]))))))))
