@@ -249,7 +249,7 @@ The domain system extends immucode's type system with operations needed for cons
 ;; Construction
 (single v)              ;; exactly one value
 (union [v1 v2 ...])     ;; finite enumeration
-(range lo hi)           ;; integer range (for FD-style)
+(between lo hi)         ;; integer range (for FD-style)
 integer, number, string, keyword, ...  ;; open primitive domains
 any                     ;; everything
 void                    ;; nothing (contradiction)

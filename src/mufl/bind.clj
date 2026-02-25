@@ -7,9 +7,21 @@
    3. All domains are propagated to fixpoint
 
    After every bind, the tree is maximally narrowed."
-  (:refer-clojure :exclude [resolve])
+  (:refer-clojure :exclude [resolve destructure])
   (:require [mufl.tree :as tree]
             [mufl.domain :as dom]))
+
+;; ════════════════════════════════════════════════════════════════
+;; Recursion depth tracking
+;; ════════════════════════════════════════════════════════════════
+
+(def ^:dynamic *call-depth*
+  "Current function call depth. Incremented on each :mufl-fn application."
+  0)
+
+(def max-call-depth
+  "Maximum allowed call depth before throwing an error."
+  100)
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Helpers
@@ -305,14 +317,20 @@
 ;; ════════════════════════════════════════════════════════════════
 
 (defn- collect-constraints
-  "Find all constraint nodes in the current scope."
-  [env]
-  (let [root (tree/root env)]
-    (->> (tree/children root)
-         (keep (fn [child]
-                 (when (:constraint child)
-                   (tree/position child))))
-         vec)))
+  "Find all constraint nodes under the ::constraints subtree of the given scope."
+  ([env]
+   (collect-constraints env []))
+  ([env scope-path]
+   (let [root (tree/root env)
+         constraints-path (conj (vec scope-path) ::constraints)
+         constraints-node (tree/cd root constraints-path)]
+     (if constraints-node
+       (->> (tree/children constraints-node)
+            (keep (fn [child]
+                    (when (:constraint child)
+                      (tree/position child))))
+            vec)
+       []))))
 
 (defn propagate
   "Run all constraints in pending set to fixpoint.
@@ -356,12 +374,15 @@
 
 (defn add-constraint
   "Add a constraint node to the tree and register watches.
+   scope-path: the path of the enclosing scope (workspace or call scope)
+               where the constraint should be stored. Constraints are placed
+               under [scope-path ::constraints c-name].
    Returns the updated tree (rooted) with the constraint propagated to fixpoint,
    or nil on contradiction."
-  [env constraint-op refs]
+  [env constraint-op refs scope-path]
   (let [env (tree/root env)
         c-name (gensym-constraint-name)
-        c-path [c-name]
+        c-path (into scope-path [::constraints c-name])
         ;; Create constraint node
         env (-> env
                 (tree/ensure-path c-path)
@@ -401,6 +422,19 @@
     :else nil))
 
 (declare bind)
+(declare apply-domain-constraint)
+
+(defn substitute-expr
+  "Walk an expression tree, replacing occurrences of symbols in the
+   substitution map with their replacement expressions.
+   Used by defc for macro-expansion of constraint functions."
+  [expr subs-map]
+  (cond
+    (symbol? expr)   (get subs-map expr expr)
+    (seq? expr)      (apply list (map #(substitute-expr % subs-map) expr))
+    (vector? expr)   (mapv #(substitute-expr % subs-map) expr)
+    (map? expr)      (into {} (map (fn [[k v]] [k (substitute-expr v subs-map)])) expr)
+    :else            expr))
 
 (defn ensure-node
   "Ensure an expression is bound as a node in the tree, returning [env' path].
@@ -420,13 +454,15 @@
     ;; Literal → create anonymous child with singleton domain
     (or (number? expr) (string? expr) (boolean? expr) (nil? expr) (keyword? expr))
     (let [anon (gensym "lit")
-          env' (bind env anon expr)]
+          env' (-> (bind env anon expr)
+                   (tree/put [anon] :derived true))]
       [env' [anon]])
 
     ;; Expression → create anonymous child, bind the expr there
     (seq? expr)
     (let [anon (gensym "expr")
-          env' (bind env anon expr)]
+          env' (-> (bind env anon expr)
+                   (tree/put [anon] :derived true))]
       [env' [anon]])
 
     :else
@@ -446,13 +482,184 @@
 
 (defn add-constraint-and-return
   "Add constraint, propagate, then navigate back to the given position.
+   scope-path is the enclosing scope for the constraint.
+   If not provided, it is derived from return-to (the return-to path itself,
+   which is the scope where the constraint was created).
    Returns the env at `return-to` position, or throws on contradiction."
-  [env op paths return-to]
-  (let [env-root (tree/root env)
-        result (add-constraint env-root op paths)]
-    (if result
-      (or (tree/cd result return-to) result)
-      (throw (ex-info "Contradiction detected" {:op op :paths paths})))))
+  ([env op paths return-to]
+   (add-constraint-and-return env op paths return-to return-to))
+  ([env op paths return-to scope-path]
+   (let [env-root (tree/root env)
+         result (add-constraint env-root op paths scope-path)]
+     (if result
+       (or (tree/cd result return-to) result)
+       (throw (ex-info "Contradiction detected" {:op op :paths paths}))))))
+
+(defn destructure
+  "Destructure a pattern against an expression in a let binding.
+   
+   Dispatches through `:bind` on tree nodes when the pattern is a list
+   form `(head args...)`. The head symbol is looked up via `tree/find`,
+   and its `:bind` function is called with the pattern args plus the
+   value expression appended as the last arg.
+   
+   Map patterns:  {:key1 pat1 :key2 pat2}       → binds pat1 to (get expr :key1), etc.
+                  {:key1 pat1 . rest}            → rest gets remaining keys via dissoc.
+   
+   Vector patterns: [a b c]                      → binds a to (nth expr 0), etc.
+                    [a b . xs]                   → xs gets (drop 2 expr).
+   
+   List patterns:  (ks a b c)                    → destructuring operator dispatch
+                   (as name pattern)             → bind whole + inner destructure
+                   (DomainName inner-pattern)    → domain constraint + destructure
+   
+   Returns the env with all bindings established."
+  [env pattern expr]
+  (cond
+    ;; Map destructuring: {:key1 pat1 :key2 pat2 . rest}
+    ;; General patterns + optional dot rest. No :keys or :as sugar.
+    ;; Use (as m {:key pat}) operator for whole-value capture.
+    (map? pattern)
+    (let [dot-val    (get pattern '.)
+          ;; The actual key-pattern entries (everything except .)
+          entries    (dissoc pattern '.)
+          ;; Helpful error for legacy {:keys [...]} usage
+          _ (when (:keys pattern)
+              (throw (ex-info (str "The {:keys [...]} form is not supported. "
+                                   "Use {:x x :y y} or (ks x y) instead.")
+                              {:pattern pattern})))
+          ;; Validate that all keys are keywords
+          _ (doseq [k (keys entries)]
+              (when-not (keyword? k)
+                (throw (ex-info (str "Map destructuring keys must be keywords, got: " (pr-str k)
+                                     " (type: " (type k) ")")
+                                {:pattern pattern :key k}))))
+          ;; Bind the whole expression to a temp name
+          tmp (gensym "destruct__")
+          env (bind env tmp expr)
+          ;; For each key-pattern pair, bind via get
+          env (reduce (fn [e [k v-pattern]]
+                        (let [get-expr (list 'get tmp k)]
+                          (if (symbol? v-pattern)
+                            (bind e v-pattern get-expr)
+                            (destructure e v-pattern get-expr))))
+                      env
+                      entries)]
+      ;; Handle dot rest: bind remaining keys (dissoc the named keys)
+      (if dot-val
+        (let [remove-keys (keys entries)
+              dissoc-expr (apply list 'dissoc tmp remove-keys)]
+          (if (symbol? dot-val)
+            (bind env dot-val dissoc-expr)
+            (destructure env dot-val dissoc-expr)))
+        env))
+
+    ;; [a b c] — positional vector destructuring
+    ;; Supports: [a b . xs] (dot rest), [a b .] (bare dot)
+    ;; Extended: [a . mid c] (head/middle/last decomposition)
+    ;;   - 1 element after dot = rest binding (backward compatible)
+    ;;   - 2+ elements after dot = first is rest/middle, remaining are tail positionals
+    ;; No :as in vectors. Use (as v [a b c]) operator instead.
+    (vector? pattern)
+    (let [;; Check for dot syntax: [a b . xs]
+          dot-idx (.indexOf ^java.util.List pattern '.)
+          has-dot? (>= dot-idx 0)
+          ;; Elements before dot → positional bindings from start
+          positional (if has-dot?
+                       (subvec pattern 0 dot-idx)
+                       pattern)
+          ;; Elements after dot: partition into rest-pattern + tail-positionals
+          ;; 0 after dot = bare dot (no rest, no tail)
+          ;; 1 after dot = rest binding only (backward compatible)
+          ;; 2+ after dot = first is rest/middle, rest are tail positionals
+          after-dot (when has-dot?
+                      (subvec pattern (inc dot-idx)))
+          rest-pattern (when (and has-dot? (seq after-dot))
+                         (first after-dot))
+          tail-positionals (when (and has-dot? (> (count after-dot) 1))
+                             (subvec after-dot 1))
+          ;; Bind the whole expression to a temp name
+          tmp (gensym "destruct__")
+          env (bind env tmp expr)
+          ;; Bind head positional elements via (nth tmp i)
+          env (reduce (fn [e [i pat]]
+                        (if (symbol? pat)
+                          (bind e pat (list 'nth tmp i))
+                          ;; Nested destructuring
+                          (destructure e pat (list 'nth tmp i))))
+                      env
+                      (map-indexed vector positional))]
+      (if tail-positionals
+        ;; Head/middle/tail decomposition: resolve tmp to get total count
+        (let [;; Resolve the vector node to count children (same approach as drop)
+              vec-node (when-let [found (tree/find env [tmp])]
+                         (resolve found))
+              _ (when-not vec-node
+                  (throw (ex-info (str "Cannot resolve vector for tail positionals: " tmp)
+                                  {:pattern pattern})))
+              _ (when-not (:vector vec-node)
+                  (throw (ex-info (str "Not a vector node for tail positionals: " tmp)
+                                  {:pattern pattern})))
+              children (sort-by ::tree/name
+                                (clojure.core/filter #(integer? (::tree/name %))
+                                                     (tree/children vec-node)))
+              total (clojure.core/count children)
+              head-count (count positional)
+              tail-count (count tail-positionals)
+              min-required (+ head-count tail-count)
+              _ (when (> min-required total)
+                  (throw (ex-info (str "Vector has " total " elements but pattern requires at least "
+                                       min-required " (head: " head-count ", tail: " tail-count ")")
+                                  {:pattern pattern :total total :required min-required})))
+              middle-start head-count
+              middle-end (- total tail-count)
+              ;; Bind tail positionals via (nth tmp concrete-index) from the end
+              env (reduce (fn [e [i pat]]
+                            (let [idx (+ middle-end i)]
+                              (if (symbol? pat)
+                                (bind e pat (list 'nth tmp idx))
+                                (destructure e pat (list 'nth tmp idx)))))
+                          env
+                          (map-indexed vector tail-positionals))
+              ;; Bind middle/rest as a slice: build vector of (nth tmp i) for range [middle-start, middle-end)
+              middle-exprs (mapv (fn [i] (list 'nth tmp i))
+                                (clojure.core/range middle-start middle-end))]
+          (if (symbol? rest-pattern)
+            (bind env rest-pattern (vec middle-exprs))
+            (destructure env rest-pattern (vec middle-exprs))))
+        ;; Simple rest (0 or 1 element after dot) — original behavior
+        (if rest-pattern
+          (let [drop-n (count positional)
+                rest-expr (list 'drop drop-n tmp)]
+            (if (symbol? rest-pattern)
+              (bind env rest-pattern rest-expr)
+              (destructure env rest-pattern rest-expr)))
+          env)))
+
+    ;; (head args...) — look up head, dispatch via :bind with value appended
+    ;; Convention: destructure calls (:bind node) with (concat pattern-args [value])
+    ;; as a vector with ^:destructuring metadata. The :bind function uses
+    ;; (last args) to get the value being destructured and (butlast args)
+    ;; for the pattern elements.
+    (seq? pattern)
+    (let [[head & args] pattern
+          node (tree/find env [head])
+          _ (when-not node
+              (throw (ex-info (str "Unresolved pattern head: " head)
+                              {:pattern pattern})))
+          resolved (resolve node)]
+      (cond
+        ;; Node has :bind — call it with pattern args + value appended
+        (:bind resolved)
+        ((:bind resolved) env (with-meta (vec (concat args [expr]))
+                                {:destructuring true}))
+
+        :else
+        (throw (ex-info (str "No :bind for pattern head: " head)
+                        {:pattern pattern}))))
+
+    :else
+    (throw (ex-info "Invalid destructuring pattern" {:pattern pattern}))))
 
 (defn bind-relational
   "Bind a relational constraint like (< x y).
@@ -494,6 +701,220 @@
         result-path (tree/position env'')]
     (add-constraint-and-return env'' op [a-path b-path result-path] my-pos)))
 
+;; ════════════════════════════════════════════════════════════════
+;; Domain definitions (defdomain support)
+;; ════════════════════════════════════════════════════════════════
+
+(defn resolve-domain-schema
+  "Resolve a domain schema expression into a domain-def map.
+   
+   Schema forms:
+   - `string`, `integer`, etc. → type domain reference
+   - `(range lo hi)` → int-range domain
+   - `(one-of a b c)` → finite domain
+   - `{:key1 type1 :key2 type2}` → map schema (structural domain)
+   - `(and DomainName {:extra-key type})` → composed domain (intersection)
+   - `DomainName` → reference to another defined domain"
+  [env schema-expr]
+  (cond
+    ;; Symbol → resolve to type domain or domain-def reference
+    (symbol? schema-expr)
+    (if-let [found (tree/find env [schema-expr])]
+      (let [resolved (resolve found)]
+        (cond
+          ;; Type domain primitive (string, integer, etc.)
+          (:type-domain resolved)
+          {:kind :type-constraint :domain (:type-domain resolved)}
+
+          ;; Reference to another defdomain
+          (:domain-def resolved)
+          (:domain-def resolved)
+
+          :else
+          (throw (ex-info (str "Symbol is not a domain type: " schema-expr)
+                          {:sym schema-expr}))))
+      (throw (ex-info (str "Unresolved domain type: " schema-expr)
+                      {:sym schema-expr})))
+
+    ;; Map literal → structural (map) domain
+    (map? schema-expr)
+    {:kind :map-schema
+     :fields (into {} (map (fn [[k v]]
+                             [k (resolve-domain-schema env v)])
+                           schema-expr))}
+
+    ;; List → dispatch on head
+    (seq? schema-expr)
+    (let [[head & args] schema-expr]
+      (case head
+        between (let [[lo hi] args]
+                  {:kind :type-constraint :domain (dom/int-range lo hi)})
+        one-of {:kind :type-constraint :domain (dom/finite (set args))}
+        and {:kind :and-schema
+             :schemas (mapv #(resolve-domain-schema env %) args)}
+
+        ;; Type constructor schemas for collections
+        vector-of (let [[elem-type] args]
+                    {:kind :vector-of-schema
+                     :element-schema (resolve-domain-schema env elem-type)})
+
+        tuple (let [[types-vec] args]
+                (when-not (vector? types-vec)
+                  (throw (ex-info "tuple schema requires a vector of types"
+                                  {:form schema-expr})))
+                {:kind :tuple-schema
+                 :element-schemas (mapv #(resolve-domain-schema env %) types-vec)})
+
+        map-of (let [[key-type val-type] args]
+                 {:kind :map-of-schema
+                  :key-schema (resolve-domain-schema env key-type)
+                  :value-schema (resolve-domain-schema env val-type)})
+
+        (throw (ex-info (str "Unknown domain schema form: " head)
+                        {:form schema-expr}))))
+
+    :else
+    (throw (ex-info "Invalid domain schema expression" {:expr schema-expr}))))
+
+(defn apply-domain-constraint
+  "Apply a domain definition as a constraint to an argument.
+   (DomainName arg) constrains arg to match the domain's schema.
+   Returns the env at the same position it was called from."
+  [env domain-def args]
+  (let [my-pos (tree/position env)
+        target-expr (first args)]
+    (when (not= 1 (count args))
+      (throw (ex-info "Domain constraint takes exactly one argument"
+                      {:args args})))
+    (letfn [(apply-schema [env target-path schema]
+              (case (:kind schema)
+                ;; Simple type/value constraint → intersect domain
+                :type-constraint
+                (let [env-root (tree/root env)
+                      current-dom (domain-of env-root target-path)
+                      narrowed (dom/intersect current-dom (:domain schema))]
+                  (if (dom/void? narrowed)
+                    (throw (ex-info "Domain constraint contradiction"
+                                    {:path target-path :domain (:domain schema)
+                                     :current current-dom}))
+                    (let [env' (set-domain env-root target-path narrowed)]
+                      ;; Propagate any watchers
+                      (let [node (tree/cd env' target-path)
+                            watchers (:watched-by node)]
+                        (if (seq watchers)
+                          (or (propagate env' (vec watchers))
+                              (throw (ex-info "Contradiction during domain propagation"
+                                              {:path target-path})))
+                          env')))))
+
+                ;; Map schema → ensure target is a map, constrain each field
+                :map-schema
+                (let [env-root (tree/root env)
+                      target-node (resolve-at env-root target-path)]
+                  (when-not (:map target-node)
+                    (throw (ex-info "Domain constraint: expected a map"
+                                    {:path target-path})))
+                  (let [target-resolved-path (tree/position target-node)]
+                    (reduce (fn [env-root [field-key field-schema]]
+                              (let [child-path (conj target-resolved-path field-key)
+                                    child (tree/cd env-root child-path)]
+                                (if child
+                                  ;; Field exists → constrain it
+                                  (let [resolved-child (resolve (tree/cd env-root child-path))
+                                        resolved-path (tree/position resolved-child)]
+                                    (apply-schema (tree/cd env-root my-pos) resolved-path field-schema))
+                                  ;; Field doesn't exist → create it and constrain
+                                  ;; (For now, require field to exist)
+                                  (throw (ex-info (str "Domain constraint: missing field " field-key)
+                                                  {:field field-key :path target-path})))))
+                            env-root
+                            (:fields schema))))
+
+                ;; And-schema → apply each sub-schema in sequence
+                :and-schema
+                (reduce (fn [env-root sub-schema]
+                          (apply-schema (tree/cd env-root my-pos) target-path sub-schema))
+                        (tree/root env)
+                        (:schemas schema))
+
+                ;; Vector-of schema → ensure target is a vector, constrain each element
+                :vector-of-schema
+                (let [env-root (tree/root env)
+                      target-node (resolve-at env-root target-path)]
+                  (when-not (:vector target-node)
+                    (throw (ex-info "Domain constraint: expected a vector for vector-of"
+                                    {:path target-path})))
+                  (let [target-resolved-path (tree/position target-node)
+                        children (sort-by ::tree/name
+                                          (clojure.core/filter #(integer? (::tree/name %))
+                                                    (tree/children target-node)))
+                        elem-schema (:element-schema schema)]
+                    (reduce (fn [env-root child]
+                              (let [resolved-child (resolve child)
+                                    resolved-path (tree/position resolved-child)]
+                                (apply-schema (tree/cd env-root my-pos) resolved-path elem-schema)))
+                            env-root
+                            children)))
+
+                ;; Tuple schema → ensure vector, check length, constrain per position
+                :tuple-schema
+                (let [env-root (tree/root env)
+                      target-node (resolve-at env-root target-path)]
+                  (when-not (:vector target-node)
+                    (throw (ex-info "Domain constraint: expected a vector for tuple"
+                                    {:path target-path})))
+                  (let [target-resolved-path (tree/position target-node)
+                        children (sort-by ::tree/name
+                                          (clojure.core/filter #(integer? (::tree/name %))
+                                                    (tree/children target-node)))
+                        elem-schemas (:element-schemas schema)
+                        n (count children)
+                        expected (count elem-schemas)]
+                    (when (not= n expected)
+                      (throw (ex-info (str "tuple domain: vector has " n " elements but tuple specifies " expected)
+                                      {:actual n :expected expected})))
+                    (reduce (fn [env-root [idx elem-schema]]
+                              (let [child (nth children idx)
+                                    resolved-child (resolve child)
+                                    resolved-path (tree/position resolved-child)]
+                                (apply-schema (tree/cd env-root my-pos) resolved-path elem-schema)))
+                            env-root
+                            (map-indexed vector elem-schemas))))
+
+                ;; Map-of schema → ensure target is a map, constrain all entries
+                :map-of-schema
+                (let [env-root (tree/root env)
+                      target-node (resolve-at env-root target-path)]
+                  (when-not (:map target-node)
+                    (throw (ex-info "Domain constraint: expected a map for map-of"
+                                    {:path target-path})))
+                  (let [children (tree/children target-node)
+                        key-schema (:key-schema schema)
+                        val-schema (:value-schema schema)
+                        key-dom (when (= :type-constraint (:kind key-schema))
+                                  (:domain key-schema))]
+                    ;; Validate keys
+                    (doseq [child children]
+                      (let [k (::tree/name child)]
+                        (when (and key-dom (not (dom/contains-val? key-dom k)))
+                          (throw (ex-info (str "map-of domain: key " k " does not match key type")
+                                          {:key k})))))
+                    ;; Constrain values
+                    (reduce (fn [env-root child]
+                              (let [resolved-child (resolve child)
+                                    resolved-path (tree/position resolved-child)]
+                                (apply-schema (tree/cd env-root my-pos) resolved-path val-schema)))
+                            env-root
+                            children)))))]
+
+      ;; Resolve the target argument
+      (let [[env' target-path] (ensure-node-abs env target-expr)
+            ;; Follow links to the real target
+            resolved-target (resolve-at (tree/root env') target-path)
+            resolved-path (tree/position resolved-target)
+            result-root (apply-schema env' resolved-path domain-def)]
+        (or (tree/cd result-root my-pos) result-root)))))
+
 (defn bind
   "Bind an expression into the environment tree.
 
@@ -514,9 +935,7 @@
      (symbol? expr)
      (if-let [found (tree/find env [expr])]
        (let [found-target (resolve found)]
-         (assoc env
-                :link (tree/position found-target)
-                :domain (:domain found-target)))
+         (assoc env :link (tree/position found-target)))
        (throw (ex-info (str "Unresolved symbol: " expr) {:sym expr})))
 
      ;; List → dispatch on head
@@ -533,34 +952,69 @@
 
              ;; User-defined function with :mufl-fn
              (:mufl-fn node)
-             (let [{:keys [params body]} (:mufl-fn node)
-                   my-pos (tree/position env)
-                   ;; Create a call scope as child of current position
-                   call-name (gensym "call")
-                   env-with-scope (tree/ensure-path env [call-name])
-                   call-env (tree/cd env-with-scope [call-name])
-                   ;; Bind each param to corresponding arg expression
-                   env-bound (reduce (fn [e [param arg-expr]]
-                                       (bind e param arg-expr))
-                                     call-env
-                                     (map vector params args))
-                   ;; Evaluate body in the call scope — this creates
-                   ;; the result node with domain/link in the call scope
-                   result (bind env-bound body)
-                   result-pos (tree/position result)]
-               ;; The caller links to the result node in the call scope.
-               ;; This way constraints on the caller propagate through.
-               (let [result-root (tree/root result)
-                     ;; Navigate back to caller position
-                     caller (tree/cd result-root my-pos)
-                     ;; If result has a link, follow it for the final target
-                     target-path (or (:link result) result-pos)]
-                 (assoc caller
-                        :link target-path
-                        :domain (:domain (resolve-at result-root target-path)))))
+             (do
+               (when (>= *call-depth* max-call-depth)
+                 (throw (ex-info (str "Recursion depth limit exceeded (depth=" *call-depth* ")")
+                                 {:depth *call-depth* :fn head})))
+               (binding [*call-depth* (inc *call-depth*)]
+                 (let [{:keys [params body]} (:mufl-fn node)
+                       _ (when (not= (count params) (count args))
+                           (throw (ex-info (str "Arity mismatch: expected " (count params)
+                                                " args, got " (count args))
+                                           {:params params :args args :fn-name head})))
+                       my-pos (tree/position env)
+                       ;; Evaluate arg expressions in the CALLER's scope first.
+                       ;; This ensures (f (- n 1)) evaluates (- n 1) using the
+                       ;; caller's n, not the callee's param n which shadows it.
+                       [env-after-args arg-paths]
+                       (reduce (fn [[e paths] arg-expr]
+                                 (let [[e' path] (ensure-node-abs e arg-expr)]
+                                   [e' (conj paths path)]))
+                               [env []]
+                               args)
+                       ;; Create a call scope as child of current position
+                       call-name (gensym "call")
+                       env-with-scope (tree/ensure-path env-after-args [call-name])
+                       call-env (tree/cd env-with-scope [call-name])
+                       ;; Link each param to the pre-evaluated arg node
+                       env-bound (reduce (fn [e [param arg-path]]
+                                           (let [e (tree/ensure-path e [param])]
+                                             (tree/upd e [param]
+                                                       #(assoc % :link arg-path))))
+                                         call-env
+                                         (map vector params arg-paths))
+                       ;; Evaluate body in the call scope — this creates
+                       ;; the result node with domain/link in the call scope
+                       result (bind env-bound body)
+                       result-pos (tree/position result)]
+                   ;; The caller links to the result node in the call scope.
+                   ;; This way constraints on the caller propagate through.
+                   (let [result-root (tree/root result)
+                         ;; Navigate back to caller position
+                         caller (tree/cd result-root my-pos)
+                         ;; If result has a link, follow it for the final target
+                         target-path (or (:link result) result-pos)]
+                     (assoc caller :link target-path)))))
+
+             ;; User-defined constraint function with :defc
+             (:defc node)
+             (let [{:keys [params body]} (:defc node)
+                   _ (when (not= (count params) (count args))
+                       (throw (ex-info (str "Arity mismatch in defc: expected " (count params)
+                                            " args, got " (count args))
+                                       {:params params :args args :fn-name head})))
+                   ;; Macro-expand: substitute param symbols with arg expressions
+                   substitution (zipmap params args)
+                   substituted-body (substitute-expr body substitution)]
+               ;; Bind the substituted body in the caller scope directly
+               (bind env substituted-body))
 
              :else
              (throw (ex-info (str "No :bind for form: " head) {:head head}))))
+
+         ;; Keyword as function: (:key m) → (get m :key)
+         (keyword? head)
+         (bind env (list 'get (first args) head))
 
          :else
          (throw (ex-info "Cannot bind list with non-symbol head" {:expr expr}))))

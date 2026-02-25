@@ -16,8 +16,11 @@
 ;;   {:kind :single, :value v}     — exactly v
 ;;   {:kind :finite, :values #{…}} — finite set, |values| >= 2
 ;;
-;; We keep it simple. Open types (integer, string, ...) can come later.
-;; For Phase 1, we only need finite domains and singletons.
+;;   {:kind :type, :type :string}   — all strings
+;;   {:kind :type, :type :integer}  — all integers
+;;   {:kind :type, :type :number}   — all numbers
+;;   {:kind :type, :type :keyword}  — all keywords
+;;   {:kind :type, :type :boolean}  — all booleans (but finite: true/false)
 ;; ════════════════════════════════════════════════════════════════
 
 (def void {:kind :void})
@@ -39,6 +42,51 @@
       1 (single (first s))
       {:kind :finite :values s})))
 
+(defn type-dom
+  "Domain representing all values of a given type.
+   Supported types: :string, :integer, :number, :keyword, :boolean."
+  [t]
+  {:kind :type :type t})
+
+(def string-dom  (type-dom :string))
+(def integer-dom (type-dom :integer))
+(def number-dom  (type-dom :number))
+(def keyword-dom (type-dom :keyword))
+(def boolean-dom (type-dom :boolean))
+
+(defn- type-predicate
+  "Returns a predicate for a type domain."
+  [t]
+  (case t
+    :string  string?
+    :integer integer?
+    :number  number?
+    :keyword keyword?
+    :boolean #(instance? Boolean %)))
+
+(defn- type-compatible?
+  "Check whether value v belongs to type t."
+  [t v]
+  ((type-predicate t) v))
+
+(defn- types-overlap?
+  "Check whether two type domains can have common values.
+   :integer is a subtype of :number."
+  [t1 t2]
+  (or (= t1 t2)
+      (and (= t1 :integer) (= t2 :number))
+      (and (= t1 :number) (= t2 :integer))))
+
+(defn- type-intersection
+  "Intersect two type domains. Returns a type domain or void."
+  [t1 t2]
+  (cond
+    (= t1 t2) (type-dom t1)
+    ;; integer ∩ number = integer
+    (and (= t1 :integer) (= t2 :number)) (type-dom :integer)
+    (and (= t1 :number) (= t2 :integer)) (type-dom :integer)
+    :else void))
+
 (defn int-range
   "Domain containing integers from lo to hi (inclusive)."
   [lo hi]
@@ -53,6 +101,9 @@
 
 (defn any? [d]
   (= :any (:kind d)))
+
+(defn type? [d]
+  (= :type (:kind d)))
 
 (defn singleton?
   "Is this domain a single concrete value?"
@@ -73,6 +124,7 @@
     :single #{(:value d)}
     :finite (:values d)
     :any nil
+    :type nil  ;; open types are not enumerable
     nil))
 
 (defn finite?
@@ -93,6 +145,7 @@
     :any true
     :single (= (:value d) v)
     :finite (contains? (:values d) v)
+    :type (type-compatible? (:type d) v)
     false))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -110,18 +163,29 @@
     (any? d2) d1
     (= d1 d2) d1
 
+    ;; Type ∩ Type
+    (and (type? d1) (type? d2))
+    (type-intersection (:type d1) (:type d2))
+
+    ;; Type ∩ finite — filter members by type predicate
+    (and (type? d1) (members d2))
+    (finite (set (filter (type-predicate (:type d1)) (members d2))))
+
+    (and (type? d2) (members d1))
+    (finite (set (filter (type-predicate (:type d2)) (members d1))))
+
     ;; Both finite — set intersection
     (and (members d1) (members d2))
     (finite (clojure.set/intersection (members d1) (members d2)))
 
     ;; One finite, one open — filter
     (members d1)
-    d1  ;; TODO: filter by open domain's predicate when we add open types
+    d1
 
     (members d2)
     d2
 
-    ;; Both open — for now, just return d1 (TODO: proper open type intersection)
+    ;; Both open — for now, just return d1
     :else d1))
 
 (defn unite
@@ -133,6 +197,26 @@
     (void? d1) d2
     (void? d2) d1
     (= d1 d2) d1
+
+    ;; Type ∪ Type
+    (and (type? d1) (type? d2))
+    (cond
+      ;; integer ∪ number = number
+      (and (= (:type d1) :integer) (= (:type d2) :number)) number-dom
+      (and (= (:type d1) :number) (= (:type d2) :integer)) number-dom
+      ;; Different unrelated types → any
+      :else any)
+
+    ;; Type ∪ finite where all members are of that type → just the type
+    (and (type? d1) (members d2))
+    (if (every? (type-predicate (:type d1)) (members d2))
+      d1 ;; finite values are all within the type
+      any)
+
+    (and (type? d2) (members d1))
+    (if (every? (type-predicate (:type d2)) (members d1))
+      d2
+      any)
 
     ;; Both finite — set union
     (and (members d1) (members d2))
@@ -148,6 +232,22 @@
     (void? d2) d1
     (any? d2) void
     (= d1 d2) void
+
+    ;; Type - Type: if same type → void; if different → d1 unchanged
+    ;; (but integer - number = void since integer ⊂ number)
+    (and (type? d1) (type? d2))
+    (cond
+      (= (:type d1) (:type d2)) void
+      (and (= (:type d1) :integer) (= (:type d2) :number)) void
+      :else d1)
+
+    ;; Type - finite: can't enumerate what's left, return type unchanged
+    (and (type? d1) (members d2))
+    d1
+
+    ;; Finite - type: filter out members matching the type
+    (and (members d1) (type? d2))
+    (finite (set (remove (type-predicate (:type d2)) (members d1))))
 
     (and (members d1) (members d2))
     (finite (clojure.set/difference (members d1) (members d2)))

@@ -14,29 +14,29 @@
   (testing "(one-of) — empty domain returns no solutions"
     (is (= [] (m/query (let [x (one-of)] x))))))
 
-(deftest inverted-range
-  (testing "(range 5 3) — inverted range returns no solutions"
-    (is (= [] (m/query (let [x (range 5 3)] x))))))
+(deftest inverted-between
+  (testing "(between 5 3) — inverted between returns no solutions"
+    (is (= [] (m/query (let [x (between 5 3)] x))))))
 
 (deftest single-nil-domain
   (testing "nil as a domain value"
     (is (= [nil] (m/query nil)))
     (is (= [nil] (m/query (let [x nil] x))))))
 
-(deftest single-element-range
-  (testing "(range 3 3) — single element range"
-    (is (= [3] (m/query (let [x (range 3 3)] x))))))
+(deftest single-element-between
+  (testing "(between 3 3) — single element between"
+    (is (= [3] (m/query (let [x (between 3 3)] x))))))
 
 (deftest large-domain-performance
-  (testing "(range 1 100) with constraints doesn't blow up"
-    (let [results (m/query (let [x (range 1 100)]
+  (testing "(between 1 100) with constraints doesn't blow up"
+    (let [results (m/query (let [x (between 1 100)]
                              (and (> x 95) x)))]
       (is (= [96 97 98 99 100] results)))))
 
-(deftest domain-with-negative-range
-  (testing "(range -3 3) includes negatives and zero"
+(deftest domain-with-negative-between
+  (testing "(between -3 3) includes negatives and zero"
     (is (= [-3 -2 -1 0 1 2 3]
-           (m/query (let [x (range -3 3)] x))))))
+           (m/query (let [x (between -3 3)] x))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; 2. BIND EDGE CASES
@@ -190,7 +190,7 @@
 
 (deftest nested-if
   (testing "nested if: (if (< x 3) (if (> x 1) x 0) 10)"
-    (let [results (m/query (let [x (range 1 5)]
+    (let [results (m/query (let [x (between 1 5)]
                              (if (< x 3) (if (> x 1) x 0) 10)))]
       (is (= #{0 2 10} (set results))))))
 
@@ -213,7 +213,7 @@
 
 (deftest when-contradicting-body
   (testing "when with body that contradicts — should not crash outer"
-    (let [results (m/query (let [x (range 1 5)]
+    (let [results (m/query (let [x (between 1 5)]
                              (when (< x 3) (> x 5))))]
       (is (some? results)))))
 
@@ -254,11 +254,14 @@
                               (pair 1 2)))))))
 
 (deftest fn-wrong-arity
-  (testing "function called with wrong arity gives unresolved symbol error"
-    ;; When f expects [x y] but called with 1 arg, y is unresolved
+  (testing "function called with too few args"
     (is (thrown? clojure.lang.ExceptionInfo
                  (m/query (let [f (fn [x y] (+ x y))]
-                            (f 1)))))))
+                            (f 1))))))
+  (testing "function called with too many args"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (m/query (let [f (fn [x] (+ x 1))]
+                            (f 1 2 3)))))))
 
 (deftest fn-higher-order
   (testing "higher-order function application works"
@@ -342,9 +345,9 @@
 
 (deftest send-more-money-style
   (testing "small crypto-arithmetic: A + B = C where all different, all in 1..5"
-    (let [results (m/query (let [a (range 1 5)
-                                 b (range 1 5)
-                                 c (range 1 5)]
+    (let [results (m/query (let [a (between 1 5)
+                                 b (between 1 5)
+                                 c (between 1 5)]
                              (and (= (+ a b) c)
                                   (distinct [a b c])
                                   (< a b)
@@ -374,11 +377,11 @@
            (m/query [1 2 3])))))
 
 (deftest even-odd-on-already-narrow
-  (testing "even? on a singleton"
-    (is (= [2] (m/query (let [x (one-of 2)] (and (even? x) x))))))
-  (testing "even? contradiction on odd singleton"
+  (testing "even on a singleton"
+    (is (= [2] (m/query (let [x (one-of 2)] (and (even x) x))))))
+  (testing "even contradiction on odd singleton"
     (is (thrown? clojure.lang.ExceptionInfo
-                 (m/query (let [x (one-of 1)] (and (even? x) x)))))))
+                 (m/query (let [x (one-of 1)] (and (even x) x)))))))
 
 (deftest abs-of-zero
   (testing "|0| = 0"
@@ -440,7 +443,7 @@
 
 (deftest triple-nested-if
   (testing "three levels of nested if"
-    (let [results (m/query (let [x (range 1 10)]
+    (let [results (m/query (let [x (between 1 10)]
                              (if (< x 4)
                                (if (< x 2) :tiny :small)
                                (if (> x 7) :big :medium))))]
@@ -459,8 +462,8 @@
       (is (every? (fn [[x y]] (and (= x y) (> x 3))) results))
       (is (= #{[4 4] [5 5]} (set results))))))
 
-(deftest link-stale-domain-is-snapshot
-  (testing "link node's own :domain is stale snapshot but resolved domain is correct"
+(deftest link-node-has-no-domain
+  (testing "link node carries no :domain — domain is resolved by following the link"
     (let [ws (-> (env/base-env)
                  (tree/ensure-path ['ws])
                  (tree/upd ['ws] (fn [e]
@@ -471,8 +474,8 @@
       (let [y-node (tree/cd ws ['ws 'y])
             y-own-domain (:domain y-node)
             y-resolved-domain (:domain (bind/resolve y-node))]
-        ;; Own domain is stale (snapshot at bind time)
-        (is (= #{1 2 3 4 5} (dom/members y-own-domain)))
+        ;; Link nodes should NOT carry their own :domain
+        (is (nil? y-own-domain) "Link node should have no :domain of its own")
         ;; Resolved domain correctly follows the link
         (is (= #{4 5} (dom/members y-resolved-domain)))))))
 
@@ -604,29 +607,29 @@
     (is (= [false] (m/query false)))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; 19. EVEN? / ODD? INTERACTION WITH CONSTRAINTS
+;; 19. EVEN / ODD INTERACTION WITH CONSTRAINTS
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest even-then-gt-constraint
-  (testing "even? followed by relational constraint preserves evenness"
-    (is (= [8 10] (m/query (let [x (range 1 10)]
-                             (and (even? x) (> x 6) x)))))))
+  (testing "even followed by relational constraint preserves evenness"
+    (is (= [8 10] (m/query (let [x (between 1 10)]
+                             (and (even x) (> x 6) x)))))))
 
 (deftest even-with-equality-constraint
-  (testing "even? combined with arithmetic equality"
+  (testing "even combined with arithmetic equality"
     ;; x even, x+y=7: x=2→y=5, x=4→y=3, x=6→y=1
     (is (= #{[2 5] [4 3] [6 1]}
-           (set (m/query (let [x (range 1 10)
-                               y (range 1 10)]
-                           (and (even? x)
+           (set (m/query (let [x (between 1 10)
+                               y (between 1 10)]
+                           (and (even x)
                                 (= (+ x y) 7)
                                 [x y]))))))))
 
 (deftest odd-with-or
-  (testing "odd? combined with or"
+  (testing "odd combined with or"
     (is (= #{1 7 9}
-           (set (m/query (let [x (range 1 10)]
-                           (and (odd? x)
+           (set (m/query (let [x (between 1 10)]
+                           (and (odd x)
                                 (or (= x 1) (> x 6))
                                 x))))))))
 
@@ -658,21 +661,21 @@
 (deftest mod-zero-divisor
   (testing "mod where divisor domain contains 0 — 0 is filtered out"
     (is (= #{0 1 2}
-           (set (m/query (let [x (range 1 5)
+           (set (m/query (let [x (between 1 5)
                                d (one-of 0 3)]
                            (mod x d))))))))
 
 (deftest quot-zero-divisor
   (testing "quot where divisor domain contains 0 — 0 is filtered out"
     (is (= #{0 1}
-           (set (m/query (let [x (range 1 5)
+           (set (m/query (let [x (between 1 5)
                                d (one-of 0 3)]
                            (quot x d))))))))
 
 (deftest mod-with-constraint-back-propagation
   (testing "constraining mod result narrows operand"
     (is (= #{3 6 9}
-           (set (m/query (let [x (range 1 10)]
+           (set (m/query (let [x (between 1 10)]
                            (and (= (mod x 3) 0) x))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -741,8 +744,8 @@
   (testing "chaining + and - constraints"
     ;; a=1, s=a+b=4 → b=3, d=s-a=4-1=3
     (is (= #{[1 3 4 3]}
-           (set (m/query (let [a (range 1 5)
-                               b (range 1 5)
+           (set (m/query (let [a (between 1 5)
+                               b (between 1 5)
                                s (+ a b)
                                d (- s a)]
                            (and (= s 4) (= a 1)
@@ -751,14 +754,14 @@
 (deftest multiple-constraints-same-var
   (testing "multiple constraints all narrow the same variable"
     (is (= [5]
-           (m/query (let [x (range 1 10)]
-                      (and (> x 3) (< x 7) (odd? x) x)))))))
+           (m/query (let [x (between 1 10)]
+                      (and (> x 3) (< x 7) (odd x) x)))))))
 
 (deftest nested-fn-call-with-constraint
   (testing "fn call result used in constraint"
     (is (= [3]
            (m/query (let [double (fn [x] (+ x x))
-                          n (range 1 5)]
+                          n (between 1 5)]
                       (and (= (double n) 6) n)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -766,9 +769,9 @@
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest large-domain-with-tight-constraint
-  (testing "range 1..500 narrowed to 1 value is fast"
+  (testing "between 1..500 narrowed to 1 value is fast"
     (let [t0 (System/nanoTime)
-          results (m/query (let [x (range 1 500)]
+          results (m/query (let [x (between 1 500)]
                              (and (= x 42) x)))
           elapsed-ms (/ (- (System/nanoTime) t0) 1e6)]
       (is (= [42] results))
@@ -776,10 +779,10 @@
 
 (deftest four-queens-solvable
   (testing "4-queens is solvable with our constraint system"
-    (let [results (m/query (let [q1 (range 1 4)
-                                 q2 (range 1 4)
-                                 q3 (range 1 4)
-                                 q4 (range 1 4)]
+    (let [results (m/query (let [q1 (between 1 4)
+                                 q2 (between 1 4)
+                                 q3 (between 1 4)
+                                 q4 (between 1 4)]
                              (and (distinct [q1 q2 q3 q4])
                                   ;; No diagonal attacks
                                   (!= (abs (- q1 q2)) 1)

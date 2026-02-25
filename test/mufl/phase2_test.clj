@@ -3,14 +3,14 @@
             [mufl.core :as m]))
 
 ;; ════════════════════════════════════════════════════════════════
-;; range
+;; between
 ;; ════════════════════════════════════════════════════════════════
 
-(deftest range-domain
-  (testing "integer range"
-    (is (= [1 2 3 4 5] (m/query (let [x (range 1 5)] x)))))
-  (testing "range with constraint"
-    (is (= [8 9 10] (m/query (let [x (range 1 10)] (and (> x 7) x)))))))
+(deftest between-domain
+  (testing "integer between"
+    (is (= [1 2 3 4 5] (m/query (let [x (between 1 5)] x)))))
+  (testing "between with constraint"
+    (is (= [8 9 10] (m/query (let [x (between 1 10)] (and (> x 7) x)))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; mod / quot
@@ -19,22 +19,22 @@
 (deftest mod-quot
   (testing "mod constraint — multiples of 3"
     (is (= [3 6 9 12 15 18]
-           (m/query (let [x (range 1 20)] (and (= (mod x 3) 0) x))))))
+           (m/query (let [x (between 1 20)] (and (= (mod x 3) 0) x))))))
   (testing "quot constraint"
     (is (= [6 7 8]
-           (m/query (let [x (range 0 10)] (and (= (quot x 3) 2) x)))))))
+           (m/query (let [x (between 0 10)] (and (= (quot x 3) 2) x)))))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; even? / odd?
+;; even / odd
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest even-odd
-  (testing "even?"
+  (testing "even"
     (is (= [2 4 6 8 10]
-           (m/query (let [x (range 1 10)] (and (even? x) x))))))
-  (testing "odd?"
+           (m/query (let [x (between 1 10)] (and (even x) x))))))
+  (testing "odd"
     (is (= [1 3 5 7 9]
-           (m/query (let [x (range 1 10)] (and (odd? x) x)))))))
+           (m/query (let [x (between 1 10)] (and (odd x) x)))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; or
@@ -43,11 +43,11 @@
 (deftest or-disjunction
   (testing "or narrows to union of branches"
     (is (= #{3 7}
-           (set (m/query (let [x (range 1 10)]
+           (set (m/query (let [x (between 1 10)]
                            (and (or (= x 3) (= x 7)) x)))))))
-  (testing "or with range constraints"
+  (testing "or with between constraints"
     (is (= #{1 2 8 9 10}
-           (set (m/query (let [x (range 1 10)]
+           (set (m/query (let [x (between 1 10)]
                            (and (or (< x 3) (> x 7)) x))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -67,7 +67,7 @@
 (deftest if-branching
   (testing "if returns union of branch values"
     (is (= #{1 2 3 4 10}
-           (set (m/query (let [x (range 1 10)] (if (< x 5) x 10)))))))
+           (set (m/query (let [x (between 1 10)] (if (< x 5) x 10)))))))
   (testing "if with vector return"
     (let [results (m/query (let [x (one-of 1 2 3)
                                  y (one-of 4 5 6)]
@@ -80,7 +80,7 @@
 (deftest cond-branching
   (testing "cond returns union of all branches"
     (is (= #{0 1 2 3 8 9 10}
-           (set (m/query (let [x (range 1 10)]
+           (set (m/query (let [x (between 1 10)]
                            (cond
                              (< x 4) x
                              (> x 7) x
@@ -94,12 +94,12 @@
   (testing "fn with constraint propagation — double"
     (is (= [3]
            (m/query (let [double (fn [x] (+ x x))
-                          n (range 1 5)]
+                          n (between 1 5)]
                       (and (= (double n) 6) n))))))
   (testing "fn with constraint propagation — square"
     (is (= [5]
            (m/query (let [sq (fn [x] (* x x))
-                          n (range 1 10)]
+                          n (between 1 10)]
                       (and (= (sq n) 25) n)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -131,7 +131,7 @@
 (deftest fizzbuzz
   (testing "multiples of 3 or 5 under 20"
     (is (= #{3 5 6 9 10 12 15 18 20}
-           (set (m/query (let [x (range 1 20)]
+           (set (m/query (let [x (between 1 20)]
                            (and (or (= (mod x 3) 0)
                                     (= (mod x 5) 0))
                                 x))))))))
@@ -143,9 +143,9 @@
 (deftest pythagorean-triples
   (testing "a² + b² = c² for a,b,c ≤ 15"
     (is (= #{[3 4 5] [6 8 10] [5 12 13] [9 12 15]}
-           (set (m/query (let [a (range 1 15)
-                               b (range 1 15)
-                               c (range 1 15)]
+           (set (m/query (let [a (between 1 15)
+                               b (between 1 15)
+                               c (between 1 15)]
                            (and (< a b)
                                 (<= b c)
                                 (= (+ (* a a) (* b b)) (* c c))

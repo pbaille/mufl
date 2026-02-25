@@ -13,18 +13,6 @@
 ;; Finding non-ground variables
 ;; ════════════════════════════════════════════════════════════════
 
-(defn- derived-name?
-  "Returns true if the node name looks like a gensym-generated intermediate name.
-   These are created by ensure-node for anonymous expression/literal nodes
-   and should not be independently labeled during search — they derive their
-   ground values from the variables they depend on via constraint propagation."
-  [sym]
-  (when (symbol? sym)
-    (let [s (name sym)]
-      (or (.startsWith s "expr")
-          (.startsWith s "lit")
-          (.startsWith s "call")))))
-
 (defn collect-non-ground
   "Walk the tree under `scope-path` and collect paths of nodes with
    non-singleton finite domains (candidates for labeling).
@@ -35,8 +23,7 @@
     (when scope
       (->> (tree/children scope)
            (keep (fn [child]
-                   (let [d (:domain child)
-                         child-name (::tree/name child)]
+                   (let [d (:domain child)]
                      (when (and d
                                 (not (dom/singleton? d))
                                 (not (dom/void? d))
@@ -46,9 +33,53 @@
                                 (not (:link child))
                                 (not (:vector child))
                                 (not (:map child))
-                                (not (derived-name? child-name)))
+                                (not (:derived child)))
                        (tree/position child)))))
            vec))))
+
+(defn collect-result-deps
+  "Follow links from the result node and collect all non-ground variables
+   that the result depends on. This ensures we only enumerate variables
+   that affect the output, avoiding duplicate solutions from unrelated vars."
+  [env scope-path]
+  (let [root (tree/root env)
+        scope-node (tree/cd root scope-path)]
+    (when scope-node
+      (letfn [(collect-deps [node seen]
+                (let [pos (tree/position node)]
+                  (if (seen pos)
+                    #{}
+                    (let [seen (conj seen pos)
+                          resolved (bind/resolve node)
+                          rpos (tree/position resolved)]
+                      (cond
+                        ;; Vector/map — recurse into children
+                        (or (:vector resolved) (:map resolved))
+                        (reduce (fn [deps child]
+                                  (into deps (collect-deps child seen)))
+                                #{}
+                                (tree/children resolved))
+
+                        ;; Non-ground finite domain — this is a dep.
+                        ;; Skip derived/intermediate nodes — they'll be
+                        ;; determined when their source variables are ground.
+                        (let [d (:domain resolved)]
+                          (and d
+                               (not (dom/singleton? d))
+                               (not (dom/void? d))
+                               (dom/finite? d)
+                               (not (:derived resolved))))
+                        #{rpos}
+
+                        ;; Link that we need to follow
+                        (:link node)
+                        (let [target (tree/cd root (:link node))]
+                          (if target
+                            (collect-deps target seen)
+                            #{}))
+
+                        :else #{})))))]
+        (vec (collect-deps scope-node #{}))))))
 
 (defn- pick-variable
   "Choose the variable with the smallest domain (fail-first heuristic)."
@@ -151,26 +182,23 @@
                               (:link scope-node)
                               (:vector scope-node)
                               (:map scope-node))
-            ;; Collect vars that the result depends on
-            result-deps (when (:link scope-node)
-                          ;; Result links to a variable — that variable must be grounded
-                          #{(:link scope-node)})
-            result-vec-deps (when (:vector scope-node)
-                              ;; Result is a vector — all children with links must be grounded
-                              (->> (tree/children scope-node)
-                                   (keep :link)
-                                   set))
-            all-result-deps (into (or result-deps #{})
-                                  (or result-vec-deps #{}))
             ;; Find non-ground vars that the result depends on
             non-ground (collect-non-ground env scope-path)
-            relevant-non-ground (if (and scope-ground? (not (:link scope-node)) (not (:vector scope-node)))
+            ;; Also collect deps from result links (for vars nested in collections)
+            result-deps (collect-result-deps env scope-path)
+            ;; Union: we need all non-ground vars from direct scope + result deps
+            all-non-ground (vec (distinct (concat non-ground result-deps)))
+            relevant-non-ground (if (and scope-ground?
+                                         (not (:link scope-node))
+                                         (not (:vector scope-node))
+                                         (not (:map scope-node)))
                                   ;; Result is a literal singleton — no vars needed
                                   []
-                                  non-ground)
+                                  all-non-ground)
             scope-non-ground? (and scope-dom
                                    (not (:link scope-node))
                                    (not (:vector scope-node))
+                                   (not (:map scope-node))
                                    (dom/finite? scope-dom)
                                    (not (dom/singleton? scope-dom))
                                    (not (dom/void? scope-dom)))]
@@ -234,3 +262,34 @@
           (extract-value env (:link resolved))
 
           :else (:domain resolved))))))
+
+(defn- user-binding?
+  "True if a workspace child represents a user-defined value binding
+   (not an internal/derived/function/constraint/domain definition node)."
+  [child]
+  (let [nm (::tree/name child)]
+    (and (symbol? nm)
+         (not (:derived child))
+         (not (:primitive child))
+         (not (:mufl-fn child))
+         (not (:defc child))
+         (not (:bind child))
+         ;; Must hold a value: domain, link, vector, or map
+         (or (:domain child)
+             (:link child)
+             (:vector child)
+             (:map child)))))
+
+(defn extract-bindings
+  "Extract all user-defined bindings from the workspace scope as a map.
+   Returns {symbol value} for each user variable in the scope."
+  [env scope-path]
+  (let [scope (tree/cd env scope-path)]
+    (when scope
+      (let [children (tree/children scope)]
+        (into {}
+              (keep (fn [child]
+                      (when (user-binding? child)
+                        [(::tree/name child)
+                         (extract-value env (tree/position child))])))
+              children)))))
