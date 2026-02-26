@@ -897,11 +897,66 @@
     (add-constraint-and-return env'' op [a-path b-path result-path] my-pos)))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Domain definitions (defdomain support)
+;; Domain schema resolution (narrow support)
 ;; ════════════════════════════════════════════════════════════════
 
+(defn resolve-schema-from-tree
+  "Interpret a bound tree node as a domain schema.
+   Walks the tree structure to reconstruct a schema map.
+   Handles: type-domains, scalar domains, composite domains,
+   map nodes, vector nodes, links, and link+map (and-composition)."
+  [node]
+  (cond
+    ;; Type domain primitive (string, integer, etc.)
+    (:type-domain node)
+    {:kind :type-constraint :domain (:type-domain node)}
+
+    ;; Link AND map → and-composition (e.g., from (and Person {:company string}))
+    (and (:link node) (:map node))
+    (let [linked-node (resolve (tree/at node (:link node)))
+          linked-schema (resolve-schema-from-tree linked-node)
+          local-children (clojure.core/filter #(keyword? (::tree/name %)) (tree/children node))
+          local-fields (into {} (map (fn [child]
+                                       [(::tree/name child)
+                                        (resolve-schema-from-tree (resolve child))])
+                                     local-children))]
+      {:kind :and-schema
+       :schemas [linked-schema {:kind :map-schema :fields local-fields}]})
+
+    ;; Link only → follow it
+    (:link node)
+    (resolve-schema-from-tree (resolve (tree/at node (:link node))))
+
+    ;; Domain value (between, one-of, composite vector-of/tuple/map-of, etc.)
+    (:domain node)
+    {:kind :type-constraint :domain (:domain node)}
+
+    ;; Map node → structural map schema
+    (:map node)
+    (let [children (clojure.core/filter #(keyword? (::tree/name %)) (tree/children node))
+          fields (into {} (map (fn [child]
+                                 [(::tree/name child)
+                                  (resolve-schema-from-tree (resolve child))])
+                               children))]
+      {:kind :map-schema :fields fields})
+
+    ;; Vector node → tuple schema
+    (:vector node)
+    (let [children (sort-by ::tree/name
+                            (clojure.core/filter #(integer? (::tree/name %)) (tree/children node)))
+          elem-schemas (mapv #(resolve-schema-from-tree (resolve %)) children)]
+      (if (every? #(= :type-constraint (:kind %)) elem-schemas)
+        {:kind :type-constraint
+         :domain (dom/tuple-dom (mapv :domain elem-schemas))}
+        {:kind :tuple-schema
+         :element-schemas elem-schemas}))
+
+    :else
+    (throw (ex-info "Cannot interpret node as domain schema"
+                    {:node (select-keys node [:domain :link :map :vector ::tree/name])}))))
+
 (defn resolve-domain-schema
-  "Resolve a domain schema expression into a domain-def map.
+  "Resolve a domain schema expression into a schema map.
    
    Schema forms:
    - `string`, `integer`, etc. → type domain reference
@@ -913,22 +968,10 @@
    - `DomainName` → reference to another defined domain"
   [env schema-expr]
   (cond
-    ;; Symbol → resolve to type domain or domain-def reference
+    ;; Symbol → resolve to type domain or bound value
     (symbol? schema-expr)
     (if-let [found (tree/find env [schema-expr])]
-      (let [resolved (resolve found)]
-        (cond
-          ;; Type domain primitive (string, integer, etc.)
-          (:type-domain resolved)
-          {:kind :type-constraint :domain (:type-domain resolved)}
-
-          ;; Reference to another domain def
-          (:domain-def resolved)
-          (:domain-def resolved)
-
-          :else
-          (throw (ex-info (str "Symbol is not a domain type: " schema-expr)
-                          {:sym schema-expr}))))
+      (resolve-schema-from-tree found)
       (throw (ex-info (str "Unresolved domain type: " schema-expr)
                       {:sym schema-expr})))
 
@@ -998,10 +1041,10 @@
     (throw (ex-info "Invalid domain schema expression" {:expr schema-expr}))))
 
 (defn apply-domain-constraint
-  "Apply a domain definition as a constraint to an argument.
-   (DomainName arg) constrains arg to match the domain's schema.
+  "Apply a domain schema as a constraint to an argument.
+   (narrow target Schema) constrains target to match the schema.
    Returns the env at the same position it was called from."
-  [env domain-def args]
+  [env schema args]
   (let [my-pos (tree/position env)
         target-expr (first args)]
     (when (not= 1 (count args))
@@ -1156,7 +1199,7 @@
             ;; Follow links to the real target
             resolved-target (resolve-at (tree/root env') target-path)
             resolved-path (tree/position resolved-target)
-            result-root (apply-schema env' resolved-path domain-def)]
+            result-root (apply-schema env' resolved-path schema)]
         (or (tree/cd result-root my-pos) result-root)))))
 
 (defn bind

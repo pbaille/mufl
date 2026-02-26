@@ -61,15 +61,14 @@
       (is (every? #(not (contains? % 'positive)) results)))))
 
 (deftest query+-with-def
-  (testing "def definitions are excluded from bindings"
+  (testing "def values appear as bindings (def just names a value)"
     (let [results (m/query+ (def Person {:name string :age (between 0 150)})
                             (let [p {:name "Alice" :age (one-of 10 25 200)}]
-                              (Person p)
+                              (narrow p Person)
                               (:age p)))]
       (is (= 2 (count results)))
-      ;; Each result has 'p' as binding, not 'Person'
+      ;; Each result has 'p' as binding
       (is (every? #(contains? % 'p) results))
-      (is (every? #(not (contains? % 'Person)) results))
       ;; Ages are narrowed by the domain constraint
       (is (= #{10 25} (set (map #(get-in % ['p :age]) results)))))))
 

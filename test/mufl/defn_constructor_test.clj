@@ -229,7 +229,7 @@
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (defn adult [p] (>= (:age p) 18))
                         (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                          (Person p)
+                          (narrow p Person)
                           (adult p)
                           (:age p))))))))
 
@@ -264,19 +264,19 @@
     (is (= [1 2 3]
            (m/query (do (def SmallInt (between 1 3))
                         (let [x (one-of 1 2 3 4 5)]
-                          (SmallInt x)
+                          (narrow x SmallInt)
                           x))))))
 
   (testing "def domain constrains map"
     (is (= ["Alice"]
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age 30}]
-                          (Person p)
+                          (narrow p Person)
                           (:name p)))))))
 
   (testing "def domain narrows"
     (is (= [10]
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 200)}]
-                          (Person p)
+                          (narrow p Person)
                           (:age p))))))))

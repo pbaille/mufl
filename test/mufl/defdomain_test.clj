@@ -105,21 +105,21 @@
     (is (= ["Alice"]
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age 30}]
-                          (Person p)
+                          (narrow p Person)
                           (get p :name)))))))
 
   (testing "domain constraint narrows out-of-domain values"
     (is (= [10]
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 200)}]
-                          (Person p)
+                          (narrow p Person)
                           (get p :age)))))))
 
   (testing "domain constraint eliminates incompatible type values"
     (is (= ["Bob"]
            (m/query (do (def Named {:name string})
                         (let [p {:name (one-of "Bob" 42)}]
-                          (Named p)
+                          (narrow p Named)
                           (get p :name))))))))
 
 (deftest def-contradiction
@@ -127,7 +127,7 @@
     (is (thrown? Exception
                 (m/query (do (def Person {:name string :age (between 0 150)})
                              (let [p {:name 42 :age 30}]
-                               (Person p)
+                               (narrow p Person)
                                (get p :name))))))))
 
 (deftest def-with-one-of-fields
@@ -135,7 +135,7 @@
     (is (= ["admin" "user"]
            (m/query (do (def Account {:role (one-of "admin" "user" "guest")})
                         (let [a {:role (one-of "admin" "user")}]
-                          (Account a)
+                          (narrow a Account)
                           (get a :role))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -167,7 +167,7 @@
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (def Employee (and Person {:company string}))
                         (let [e {:name "Alice" :age 30 :company "Acme"}]
-                          (Employee e)
+                          (narrow e Employee)
                           (get e :company)))))))
 
   (testing "composed domain narrows from parent"
@@ -175,7 +175,7 @@
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (def Employee (and Person {:company string}))
                         (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
-                          (Employee e)
+                          (narrow e Employee)
                           (get e :age))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -187,7 +187,7 @@
     (is (= [20 30]
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 20 30 200)}]
-                          (Person p)
+                          (narrow p Person)
                           (> (:age p) 15)
                           (get p :age)))))))
 
@@ -195,7 +195,7 @@
     (is (= [25]
            (m/query (do (def Person {:name string :age (between 20 30)})
                         (let [p {:name "Bob" :age (one-of 25 35)}]
-                          (Person p)
+                          (narrow p Person)
                           (get p :age))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -208,8 +208,8 @@
            (m/query (do (def HasName {:name string})
                         (def HasAge {:age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 30 200)}]
-                          (HasName p)
-                          (HasAge p)
+                          (narrow p HasName)
+                          (narrow p HasAge)
                           (get p :age))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -221,14 +221,14 @@
     (is (= ["hello" "world"]
            (m/query (do (def Stringy {:val string})
                         (let [x {:val (one-of "hello" "world" 42)}]
-                          (Stringy x)
+                          (narrow x Stringy)
                           (get x :val)))))))
 
   (testing "integer type domain filters one-of"
     (is (= [1 2 3]
            (m/query (do (def IntVal {:val integer})
                         (let [x {:val (one-of 1 2 3 "a" "b")}]
-                          (IntVal x)
+                          (narrow x IntVal)
                           (get x :val))))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -240,19 +240,19 @@
     (is (= [[1 2]]
            (m/query (do (def IntPair [integer integer])
                         (let [v [1 2]]
-                          (IntPair v)
+                          (narrow v IntPair)
                           v))))))
 
   (testing "vector tuple narrows element types"
     (is (= [[1 "a"] [2 "a"]]
            (m/query (do (def Mixed [integer string])
                         (let [v [(one-of 1 2 "x") (one-of "a" 3)]]
-                          (Mixed v)
+                          (narrow v Mixed)
                           v))))))
 
   (testing "def scalar domain"
     (is (= #{1 2 3}
            (set (m/query (do (def SmallInt (between 1 3))
                              (let [x (one-of 1 2 3 4 5)]
-                               (SmallInt x)
+                               (narrow x SmallInt)
                                x))))))))

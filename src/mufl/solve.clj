@@ -17,7 +17,8 @@
   "Walk the tree under `scope-path` and collect paths of nodes with
    non-singleton finite domains (candidates for labeling).
    Skips: constraint nodes, primitive nodes, link nodes (aliases),
-   vector/map container nodes, and derived/intermediate computation nodes."
+   vector/map container nodes, derived/intermediate computation nodes,
+   and def-bound names."
   [env scope-path]
   (let [scope (tree/cd env scope-path)]
     (when scope
@@ -33,7 +34,8 @@
                                 (not (:link child))
                                 (not (:vector child))
                                 (not (:map child))
-                                (not (:derived child)))
+                                (not (:derived child))
+                                (not (:def-binding child)))
                        (tree/position child)))))
            vec))))
 
@@ -544,6 +546,7 @@
          (not (:mufl-fn child))
          (not (:defn-constructor child))
          (not (:bind child))
+         (not (:def-binding child))
          ;; Must hold a value: domain, link, vector, or map
          (or (:domain child)
              (:link child)

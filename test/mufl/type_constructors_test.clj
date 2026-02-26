@@ -65,14 +65,14 @@
     (is (= [[1 2 3]]
            (m/query (do (def IntVec (vector-of integer))
                         (let [v [(one-of 1 "a") (one-of 2 "b") (one-of 3 "c")]]
-                          (IntVec v)
+                          (narrow v IntVec)
                           v))))))
 
   (testing "def vector-of in map field"
     (is (= [[1 2]]
            (m/query (do (def HasScores {:scores (vector-of integer)})
                         (let [p {:scores [(one-of 1 "a") (one-of 2 "b")]}]
-                          (HasScores p)
+                          (narrow p HasScores)
                           (get p :scores)))))))
 
   (testing "def vector-of composed with and"
@@ -80,7 +80,7 @@
            (m/query (do (def Student (and {:name string}
                                                 {:scores (vector-of integer)}))
                         (let [s {:name "Alice" :scores [(one-of 90 "x") (one-of 80 "y")]}]
-                          (Student s)
+                          (narrow s Student)
                           [(get s :name) (get s :scores)])))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -119,14 +119,14 @@
     (is (= [[42 "hello"]]
            (m/query (do (def Pair (tuple [integer string]))
                         (let [v [(one-of 42 "x") (one-of "hello" 99)]]
-                          (Pair v)
+                          (narrow v Pair)
                           v))))))
 
   (testing "def tuple for 2D point"
     (is (= [[3 4]]
            (m/query (do (def Point (tuple [integer integer]))
                         (let [p [(one-of 3 "x") (one-of 4 "y")]]
-                          (Point p)
+                          (narrow p Point)
                           p)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -161,7 +161,7 @@
     (is (= [{:x 10 :y 20}]
            (m/query (do (def Scores (map-of keyword integer))
                         (let [s {:x (one-of 10 "a") :y (one-of 20 "b")}]
-                          (Scores s)
+                          (narrow s Scores)
                           s))))))
 
   (testing "def map-of in composed domain"
@@ -169,7 +169,7 @@
            (m/query (do (def GradeCard (and {:name string}
                                                   {:grades (map-of keyword integer)}))
                         (let [gc {:name "Alice" :grades {:math (one-of 90 "A")}}]
-                          (GradeCard gc)
+                          (narrow gc GradeCard)
                           [(get gc :name) (get gc :grades)])))))))
 
 ;; ════════════════════════════════════════════════════════════════

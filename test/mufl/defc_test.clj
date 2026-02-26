@@ -83,7 +83,7 @@
            (m/query (do (def Person {:name string :age (between 0 150)})
                         (defn adult [p] (>= (:age p) 18))
                         (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                          (Person p)
+                          (narrow p Person)
                           (adult p)
                           (:age p))))))))
 

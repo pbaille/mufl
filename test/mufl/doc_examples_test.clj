@@ -249,13 +249,13 @@
   (is (= [10 25]
          (m/query (def Person {:name string :age (between 0 150)})
                   (let [p {:name "Alice" :age (one-of 10 25 200)}]
-                    (Person p)
+                    (narrow p Person)
                     (:age p)))))
   (is (= [30]
          (m/query (def Person {:name string :age (between 0 150)})
                   (def Employee (and Person {:company string}))
                   (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
-                    (Employee e)
+                    (narrow e Employee)
                     (:age e)))))
   (is (= [["Bob" 25]]
          (m/query (do (defn person [name age] {:name (string name) :age (integer age)})
@@ -265,7 +265,7 @@
          (m/query (def Person {:name string :age (between 0 150)})
                   (defn adult [p] (>= (:age p) 18))
                   (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                    (Person p)
+                    (narrow p Person)
                     (adult p)
                     (:age p))))))
 
