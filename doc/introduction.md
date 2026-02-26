@@ -508,57 +508,48 @@ Constraint functions compose freely:
 ;=> [[1 2] [1 3] [2 3]]
 ```
 
-## Domains (def)
+## Domains (def and narrow)
 
-`def` names a structural contract — a map schema, tuple, or other domain.
+`def` binds a name to a value — it's just an alias. When that value is a structural template (a map or vector with domain leaves), you use `narrow` to apply it as a constraint.
 
 ```clojure
 (query (def Person {:name string :age (between 0 150)})
        (let [p {:name "Alice" :age (one-of 10 25 200)}]
-         (Person p)
+         (narrow p Person)
          (:age p)))
 ;=> [10 25]
 ```
 
-`(Person p)` narrows `p`'s fields: `:name` must be a string, `:age` must be in 0..150. The value 200 is eliminated.
+`Person` is just a map value `{:name string :age (between 0 150)}`. `(narrow p Person)` walks the template and target in parallel, constraining each field: `:name` must be a string, `:age` must be in 0..150. The value 200 is eliminated.
 
-Domains compose with `and`:
+Domain templates compose with `and`:
 
 ```clojure
 (query (def Person {:name string :age (between 0 150)})
        (def Employee (and Person {:company string}))
        (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
-         (Employee e)
+         (narrow e Employee)
          (:age e)))
 ;=> [30]
 ```
 
-Domains work as destructuring patterns:
-
-```clojure
-(query (def Person {:name string :age (between 0 150)})
-       (let [(Person (ks name age)) {:name "Bob" :age 25}]
-         [name age]))
-;=> [["Bob" 25]]
-```
-
-Vector literals define tuple domains — no need for the `tuple` wrapper:
+Vector literals define tuple templates — no need for the `tuple` wrapper:
 
 ```clojure
 (query (def Point [integer integer])
        (let [p [(one-of 3 "x") (one-of 4 "y")]]
-         (Point p)
+         (narrow p Point)
          p))
 ;=> [[3 4]]
 ```
 
-Domains and constraint functions combine:
+Named templates and constraint functions combine:
 
 ```clojure
 (query (def Person {:name string :age (between 0 150)})
        (defn adult [p] (>= (:age p) 18))
        (let [p {:name "Alice" :age (one-of 10 25 30)}]
-         (Person p)
+         (narrow p Person)
          (adult p)
          (:age p)))
 ;=> [25 30]
@@ -594,7 +585,7 @@ In `def` schemas:
 ```clojure
 (query (def IntVec (vector-of integer))
        (let [v [(one-of 1 "x") (one-of 2 "y")]]
-         (IntVec v)
+         (narrow v IntVec)
          v))
 ;=> [[1 2]]
 ```
@@ -615,7 +606,7 @@ In `def` schemas:
 ```clojure
 (query (def Point (tuple [integer integer]))
        (let [p [(one-of 3 "x") (one-of 4 "y")]]
-         (Point p)
+         (narrow p Point)
          p))
 ;=> [[3 4]]
 ```
@@ -636,7 +627,7 @@ In `def` schemas:
 ```clojure
 (query (def Scores (map-of keyword integer))
        (let [s {:x (one-of 10 "a") :y (one-of 20 "b")}]
-         (Scores s)
+         (narrow s Scores)
          s))
 ;=> [{:x 10 :y 20}]
 ```
@@ -649,7 +640,7 @@ Type constructors compose naturally. A vector of named domains, or a domain cont
 (query (def Student (and {:name string}
                          {:scores (vector-of integer)}))
        (let [s {:name "Alice" :scores [(one-of 90 "x") (one-of 80 "y")]}]
-         (Student s)
+         (narrow s Student)
          [(get s :name) (get s :scores)]))
 ;=> [["Alice" [90 80]]]
 ```
@@ -760,7 +751,7 @@ Compare with `query`, which only returns the result expression:
 ;=> [[1 2] [1 3] [2 3]]
 ```
 
-`query+` is useful for inspection — you can see how every variable was bound in each solution, not just the ones you chose to return. Function definitions (`fn`), named constraints (`defn`), and domain definitions (`def`) are excluded — only value bindings appear.
+`query+` is useful for inspection — you can see how every variable was bound in each solution, not just the ones you chose to return. Function definitions (`fn`) and named constraints (`defn`) are excluded — only value bindings appear.
 
 ```clojure
 (query+ (defn positive [x] (> x 0))
@@ -783,7 +774,8 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `if` / `cond` | Branching — eager when decidable, deferred when not |
 | `fn` | Closure with constraint propagation through the body |
 | `defn` | Named reusable constraint function |
-| `def` | Named domain — structural contract for maps, tuples, collections |
+| `def` | Named value binding — gives a name to any value |
+| `narrow` | Structural constraint — narrows a value against a domain template |
 | `vector-of` | Constrain all vector elements to a type |
 | `tuple` | Per-position type constraints on a vector |
 | `map-of` | Constrain all map keys and values |
