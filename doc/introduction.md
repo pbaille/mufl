@@ -510,7 +510,7 @@ Constraint functions compose freely:
 
 ## Domains (def and narrow)
 
-`def` binds a name to a value — it's just an alias. When that value is a structural template (a map or vector with domain leaves), you use `narrow` to apply it as a constraint.
+`def` binds a name to a value — it's just an alias. `narrow` constrains a value against a domain expression — scalar, composite, or structural.
 
 ```clojure
 (query (def Person {:name string :age (between 0 150)})
@@ -520,9 +520,18 @@ Constraint functions compose freely:
 ;=> [10 25]
 ```
 
-`Person` is just a map value `{:name string :age (between 0 150)}`. `(narrow p Person)` walks the template and target in parallel, constraining each field: `:name` must be a string, `:age` must be in 0..150. The value 200 is eliminated.
+`Person` is just a map value `{:name string :age (between 0 150)}`. `(narrow p Person)` constrains each field of `p` against the corresponding domain: `:name` must be a string, `:age` must be in 0..150. The value 200 is eliminated.
 
-Domain templates compose with `and`:
+`narrow` also works with scalar domains directly:
+
+```clojure
+(query (let [x (one-of 1 "hello" :foo)]
+         (narrow x integer)
+         x))
+;=> [1]
+```
+
+Domain schemas compose with `and`:
 
 ```clojure
 (query (def Person {:name string :age (between 0 150)})
@@ -533,7 +542,7 @@ Domain templates compose with `and`:
 ;=> [30]
 ```
 
-Vector literals define tuple templates — no need for the `tuple` wrapper:
+Vector literals define tuple schemas — no need for the `tuple` wrapper:
 
 ```clojure
 (query (def Point [integer integer])
@@ -543,7 +552,7 @@ Vector literals define tuple templates — no need for the `tuple` wrapper:
 ;=> [[3 4]]
 ```
 
-Named templates and constraint functions combine:
+Named schemas and constraint functions combine:
 
 ```clojure
 (query (def Person {:name string :age (between 0 150)})
@@ -557,7 +566,7 @@ Named templates and constraint functions combine:
 
 ## Type constructors: vector-of, tuple, map-of
 
-Type constructors constrain entire collections at once. They walk the structural tree at bind time — consistent with how `map`/`filter`/`reduce` work.
+Type constructors constrain entire collections at once. They walk the collection at bind time — consistent with how `map`/`filter`/`reduce` work.
 
 ### vector-of
 
@@ -775,7 +784,7 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `fn` | Closure with constraint propagation through the body |
 | `defn` | Named reusable constraint function |
 | `def` | Named value binding — gives a name to any value |
-| `narrow` | Structural constraint — narrows a value against a domain template |
+| `narrow` | Constrain a value against a domain — scalar, composite, or structural |
 | `vector-of` | Constrain all vector elements to a type |
 | `tuple` | Per-position type constraints on a vector |
 | `map-of` | Constrain all map keys and values |
