@@ -81,9 +81,9 @@
   ;; Domain in expression position still works via narrow
   (testing "domain as expression constraint still works"
     (is (= [1 2 3]
-           (m/query (def Small (between 1 3))
+           (m/query (def small (between 1 3))
                     (let [x (one-of 0 1 2 3 4)]
-                      (and (narrow x Small) x)))))))
+                      (and (narrow x small) x)))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Composition — nested destructuring operators

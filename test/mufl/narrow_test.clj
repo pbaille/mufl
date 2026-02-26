@@ -86,41 +86,41 @@
 (deftest narrow-named-template
   (testing "narrow against def-bound domain schema"
     (is (= ["Alice"]
-           (m/query (do (def Person {:name string :age (between 0 150)})
+           (m/query (do (def person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age 30}]
-                          (narrow p Person)
+                          (narrow p person)
                           (get p :name)))))))
 
   (testing "narrow against def-bound scalar domain"
     (is (= [5]
-           (m/query (do (def SmallInt (between 1 10))
+           (m/query (do (def small-int (between 1 10))
                         (let [x 5]
-                          (narrow x SmallInt)
+                          (narrow x small-int)
                           x))))))
 
   (testing "narrow against def-bound domain eliminates values"
     (is (= [10]
-           (m/query (do (def Person {:name string :age (between 0 150)})
+           (m/query (do (def person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 200)}]
-                          (narrow p Person)
+                          (narrow p person)
                           (get p :age))))))))
 
 (deftest narrow-and-composition
   (testing "narrow with and-composed schemas"
     (is (= ["Alice"]
-           (m/query (do (def Person {:name string :age integer})
-                        (def Employee (and Person {:company string}))
+           (m/query (do (def person {:name string :age integer})
+                        (def employee (and person {:company string}))
                         (let [e {:name "Alice" :age 30 :company "ACME"}]
-                          (narrow e Employee)
+                          (narrow e employee)
                           (get e :name)))))))
 
   (testing "narrow with and applies all sub-constraints"
     (is (= ["ACME"]
-           (m/query (do (def HasName {:name string})
-                        (def HasAge {:age integer})
-                        (def Person (and HasName HasAge))
+           (m/query (do (def has-name {:name string})
+                        (def has-age {:age integer})
+                        (def person (and has-name has-age))
                         (let [p {:name "Alice" :age 30 :company "ACME"}]
-                          (narrow p Person)
+                          (narrow p person)
                           (get p :company))))))))
 
 (deftest narrow-contradiction
@@ -132,9 +132,9 @@
 
   (testing "narrow named domain with contradictory value throws"
     (is (thrown? Exception
-                (m/query (do (def Person {:name string :age (between 0 150)})
+                (m/query (do (def person {:name string :age (between 0 150)})
                              (let [p {:name 42 :age 30}]
-                               (narrow p Person)
+                               (narrow p person)
                                (get p :name))))))))
 
 (deftest narrow-one-of
@@ -146,9 +146,9 @@
 
   (testing "narrow one-of field in map"
     (is (= ["admin" "user"]
-           (m/query (do (def Account {:role (one-of "admin" "user" "guest")})
+           (m/query (do (def account {:role (one-of "admin" "user" "guest")})
                         (let [a {:role (one-of "admin" "user")}]
-                          (narrow a Account)
+                          (narrow a account)
                           (get a :role)))))))
 
   (testing "narrow with one-of eliminates invalid values"
@@ -160,7 +160,7 @@
 (deftest narrow-finite-enumeration
   (testing "narrow def-bound small domain enumerates solutions"
     (is (= #{1 2 3}
-           (set (m/query (do (def SmallInt (between 1 3))
+           (set (m/query (do (def small-int (between 1 3))
                              (let [x (one-of 1 2 3 4 5)]
-                               (narrow x SmallInt)
+                               (narrow x small-int)
                                x))))))))

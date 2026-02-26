@@ -62,9 +62,9 @@
 
 (deftest query+-with-def
   (testing "def values appear as bindings (def just names a value)"
-    (let [results (m/query+ (def Person {:name string :age (between 0 150)})
+    (let [results (m/query+ (def person {:name string :age (between 0 150)})
                             (let [p {:name "Alice" :age (one-of 10 25 200)}]
-                              (narrow p Person)
+                              (narrow p person)
                               (:age p)))]
       (is (= 2 (count results)))
       ;; Each result has 'p' as binding

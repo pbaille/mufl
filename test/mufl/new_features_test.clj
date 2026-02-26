@@ -19,17 +19,17 @@
 
   (testing "multi-body query with def"
     (is (= [10 25]
-           (m/query (def Person {:name string :age (between 0 150)})
+           (m/query (def person {:name string :age (between 0 150)})
                     (let [p {:name "Alice" :age (one-of 10 25 200)}]
-                      (narrow p Person)
+                      (narrow p person)
                       (:age p))))))
 
   (testing "multi-body query with multiple defs"
     (is (= [25 30]
-           (m/query (def Person {:name string :age (between 0 150)})
+           (m/query (def person {:name string :age (between 0 150)})
                     (defn adult [p] (>= (:age p) 18))
                     (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                      (narrow p Person)
+                      (narrow p person)
                       (adult p)
                       (:age p)))))))
 

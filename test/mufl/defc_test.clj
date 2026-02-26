@@ -80,10 +80,10 @@
 (deftest defn-with-domain
   (testing "defn combined with def domain"
     (is (= [25 30]
-           (m/query (do (def Person {:name string :age (between 0 150)})
+           (m/query (do (def person {:name string :age (between 0 150)})
                         (defn adult [p] (>= (:age p) 18))
                         (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                          (narrow p Person)
+                          (narrow p person)
                           (adult p)
                           (:age p))))))))
 

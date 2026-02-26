@@ -247,25 +247,25 @@
 
 (deftest doc-def
   (is (= [10 25]
-         (m/query (def Person {:name string :age (between 0 150)})
+         (m/query (def person {:name string :age (between 0 150)})
                   (let [p {:name "Alice" :age (one-of 10 25 200)}]
-                    (narrow p Person)
+                    (narrow p person)
                     (:age p)))))
   (is (= [30]
-         (m/query (def Person {:name string :age (between 0 150)})
-                  (def Employee (and Person {:company string}))
+         (m/query (def person {:name string :age (between 0 150)})
+                  (def employee (and person {:company string}))
                   (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
-                    (narrow e Employee)
+                    (narrow e employee)
                     (:age e)))))
   (is (= [["Bob" 25]]
          (m/query (do (defn person [name age] {:name (string name) :age (integer age)})
                       (let [(person name age) {:name "Bob" :age 25}]
                         [name age])))))
   (is (= [25 30]
-         (m/query (def Person {:name string :age (between 0 150)})
+         (m/query (def person {:name string :age (between 0 150)})
                   (defn adult [p] (>= (:age p) 18))
                   (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                    (narrow p Person)
+                    (narrow p person)
                     (adult p)
                     (:age p))))))
 

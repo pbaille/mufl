@@ -470,7 +470,7 @@ The general form is `[h₁ h₂ ... . rest t₁ t₂ ...]` where `h` elements bi
 ;=> [[{:y 2 :z 3} {:x 1 :y 2 :z 3}]]
 ```
 
-## Named constraints (defn)
+## named constraints (defn)
 
 `defn` defines a reusable constraint — a named function that narrows the caller's variables directly.
 
@@ -513,14 +513,14 @@ Constraint functions compose freely:
 `def` binds a name to a value — it's just an alias. `narrow` constrains a value against a domain expression — scalar, composite, or structural.
 
 ```clojure
-(query (def Person {:name string :age (between 0 150)})
+(query (def person {:name string :age (between 0 150)})
        (let [p {:name "Alice" :age (one-of 10 25 200)}]
-         (narrow p Person)
+         (narrow p person)
          (:age p)))
 ;=> [10 25]
 ```
 
-`Person` is just a map value `{:name string :age (between 0 150)}`. `(narrow p Person)` constrains each field of `p` against the corresponding domain: `:name` must be a string, `:age` must be in 0..150. The value 200 is eliminated.
+`person` is just a map value `{:name string :age (between 0 150)}`. `(narrow p person)` constrains each field of `p` against the corresponding domain: `:name` must be a string, `:age` must be in 0..150. The value 200 is eliminated.
 
 `narrow` also works with scalar domains directly:
 
@@ -534,10 +534,10 @@ Constraint functions compose freely:
 Domain schemas compose with `and`:
 
 ```clojure
-(query (def Person {:name string :age (between 0 150)})
-       (def Employee (and Person {:company string}))
+(query (def person {:name string :age (between 0 150)})
+       (def employee (and person {:company string}))
        (let [e {:name "Alice" :age (one-of 30 200) :company "Acme"}]
-         (narrow e Employee)
+         (narrow e employee)
          (:age e)))
 ;=> [30]
 ```
@@ -545,20 +545,20 @@ Domain schemas compose with `and`:
 Vector literals define tuple schemas — no need for the `tuple` wrapper:
 
 ```clojure
-(query (def Point [integer integer])
+(query (def point [integer integer])
        (let [p [(one-of 3 "x") (one-of 4 "y")]]
-         (narrow p Point)
+         (narrow p point)
          p))
 ;=> [[3 4]]
 ```
 
-Named schemas and constraint functions combine:
+named schemas and constraint functions combine:
 
 ```clojure
-(query (def Person {:name string :age (between 0 150)})
+(query (def person {:name string :age (between 0 150)})
        (defn adult [p] (>= (:age p) 18))
        (let [p {:name "Alice" :age (one-of 10 25 30)}]
-         (narrow p Person)
+         (narrow p person)
          (adult p)
          (:age p)))
 ;=> [25 30]
@@ -582,9 +582,9 @@ Type constructors constrain entire collections at once. They walk the collection
 Works with named domains too:
 
 ```clojure
-(query (def Named {:name string})
+(query (def named {:name string})
        (let [people [{:name (one-of "Alice" 42)} {:name (one-of "Bob" 99)}]]
-         (vector-of Named people)
+         (vector-of named people)
          people))
 ;=> [[{:name "Alice"} {:name "Bob"}]]
 ```
@@ -592,9 +592,9 @@ Works with named domains too:
 In `def` schemas:
 
 ```clojure
-(query (def IntVec (vector-of integer))
+(query (def int-vec (vector-of integer))
        (let [v [(one-of 1 "x") (one-of 2 "y")]]
-         (narrow v IntVec)
+         (narrow v int-vec)
          v))
 ;=> [[1 2]]
 ```
@@ -613,9 +613,9 @@ In `def` schemas:
 In `def` schemas:
 
 ```clojure
-(query (def Point (tuple [integer integer]))
+(query (def point (tuple [integer integer]))
        (let [p [(one-of 3 "x") (one-of 4 "y")]]
-         (narrow p Point)
+         (narrow p point)
          p))
 ;=> [[3 4]]
 ```
@@ -634,9 +634,9 @@ In `def` schemas:
 In `def` schemas:
 
 ```clojure
-(query (def Scores (map-of keyword integer))
+(query (def scores (map-of keyword integer))
        (let [s {:x (one-of 10 "a") :y (one-of 20 "b")}]
-         (narrow s Scores)
+         (narrow s scores)
          s))
 ;=> [{:x 10 :y 20}]
 ```
@@ -646,10 +646,10 @@ In `def` schemas:
 Type constructors compose naturally. A vector of named domains, or a domain containing a `vector-of` field:
 
 ```clojure
-(query (def Student (and {:name string}
+(query (def student (and {:name string}
                          {:scores (vector-of integer)}))
        (let [s {:name "Alice" :scores [(one-of 90 "x") (one-of 80 "y")]}]
-         (narrow s Student)
+         (narrow s student)
          [(get s :name) (get s :scores)]))
 ;=> [["Alice" [90 80]]]
 ```
@@ -782,8 +782,8 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `or` | Union of domains across branches |
 | `if` / `cond` | Branching — eager when decidable, deferred when not |
 | `fn` | Closure with constraint propagation through the body |
-| `defn` | Named reusable constraint function |
-| `def` | Named value binding — gives a name to any value |
+| `defn` | named reusable constraint function |
+| `def` | named value binding — gives a name to any value |
 | `narrow` | Constrain a value against a domain — scalar, composite, or structural |
 | `vector-of` | Constrain all vector elements to a type |
 | `tuple` | Per-position type constraints on a vector |

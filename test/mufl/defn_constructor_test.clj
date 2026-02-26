@@ -226,10 +226,10 @@
 (deftest constraint-with-domain
   (testing "defn combined with def domain"
     (is (= [25 30]
-           (m/query (do (def Person {:name string :age (between 0 150)})
+           (m/query (do (def person {:name string :age (between 0 150)})
                         (defn adult [p] (>= (:age p) 18))
                         (let [p {:name "Alice" :age (one-of 10 25 30)}]
-                          (narrow p Person)
+                          (narrow p person)
                           (adult p)
                           (:age p))))))))
 
@@ -262,21 +262,21 @@
 (deftest def-domain-constraint
   (testing "def domain still works as expression-position constraint"
     (is (= [1 2 3]
-           (m/query (do (def SmallInt (between 1 3))
+           (m/query (do (def small-int (between 1 3))
                         (let [x (one-of 1 2 3 4 5)]
-                          (narrow x SmallInt)
+                          (narrow x small-int)
                           x))))))
 
   (testing "def domain constrains map"
     (is (= ["Alice"]
-           (m/query (do (def Person {:name string :age (between 0 150)})
+           (m/query (do (def person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age 30}]
-                          (narrow p Person)
+                          (narrow p person)
                           (:name p)))))))
 
   (testing "def domain narrows"
     (is (= [10]
-           (m/query (do (def Person {:name string :age (between 0 150)})
+           (m/query (do (def person {:name string :age (between 0 150)})
                         (let [p {:name "Alice" :age (one-of 10 200)}]
-                          (narrow p Person)
+                          (narrow p person)
                           (:age p))))))))

@@ -63,24 +63,24 @@
 (deftest vector-of-def
   (testing "def with vector-of schema"
     (is (= [[1 2 3]]
-           (m/query (do (def IntVec (vector-of integer))
+           (m/query (do (def int-vec (vector-of integer))
                         (let [v [(one-of 1 "a") (one-of 2 "b") (one-of 3 "c")]]
-                          (narrow v IntVec)
+                          (narrow v int-vec)
                           v))))))
 
   (testing "def vector-of in map field"
     (is (= [[1 2]]
-           (m/query (do (def HasScores {:scores (vector-of integer)})
+           (m/query (do (def has-scores {:scores (vector-of integer)})
                         (let [p {:scores [(one-of 1 "a") (one-of 2 "b")]}]
-                          (narrow p HasScores)
+                          (narrow p has-scores)
                           (get p :scores)))))))
 
   (testing "def vector-of composed with and"
     (is (= [["Alice" [90 80]]]
-           (m/query (do (def Student (and {:name string}
+           (m/query (do (def student (and {:name string}
                                                 {:scores (vector-of integer)}))
                         (let [s {:name "Alice" :scores [(one-of 90 "x") (one-of 80 "y")]}]
-                          (narrow s Student)
+                          (narrow s student)
                           [(get s :name) (get s :scores)])))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -117,16 +117,16 @@
 (deftest tuple-def
   (testing "def with tuple schema"
     (is (= [[42 "hello"]]
-           (m/query (do (def Pair (tuple [integer string]))
+           (m/query (do (def pair (tuple [integer string]))
                         (let [v [(one-of 42 "x") (one-of "hello" 99)]]
-                          (narrow v Pair)
+                          (narrow v pair)
                           v))))))
 
   (testing "def tuple for 2D point"
     (is (= [[3 4]]
-           (m/query (do (def Point (tuple [integer integer]))
+           (m/query (do (def point (tuple [integer integer]))
                         (let [p [(one-of 3 "x") (one-of 4 "y")]]
-                          (narrow p Point)
+                          (narrow p point)
                           p)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -159,17 +159,17 @@
 (deftest map-of-def
   (testing "def with map-of schema"
     (is (= [{:x 10 :y 20}]
-           (m/query (do (def Scores (map-of keyword integer))
+           (m/query (do (def scores (map-of keyword integer))
                         (let [s {:x (one-of 10 "a") :y (one-of 20 "b")}]
-                          (narrow s Scores)
+                          (narrow s scores)
                           s))))))
 
   (testing "def map-of in composed domain"
     (is (= [["Alice" {:math 90}]]
-           (m/query (do (def GradeCard (and {:name string}
+           (m/query (do (def grade-card (and {:name string}
                                                   {:grades (map-of keyword integer)}))
                         (let [gc {:name "Alice" :grades {:math (one-of 90 "A")}}]
-                          (narrow gc GradeCard)
+                          (narrow gc grade-card)
                           [(get gc :name) (get gc :grades)])))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -181,19 +181,19 @@
     ;; (def Matrix (vector-of (vector-of integer)))
     ;; This requires nested schema resolution
     (is (= [[[1 2] [3 4]]]
-           (m/query (do (def IntVec (vector-of integer))
+           (m/query (do (def int-vec (vector-of integer))
                         (let [m [[(one-of 1 "a") (one-of 2 "b")]
                                  [(one-of 3 "c") (one-of 4 "d")]]]
-                          (vector-of IntVec m)
+                          (vector-of int-vec m)
                           m)))))))
 
 (deftest vector-of-with-domain-def
   (testing "vector-of with a named domain type"
     (is (= [[{:name "Alice"} {:name "Bob"}]]
-           (m/query (do (def Named {:name string})
+           (m/query (do (def named {:name string})
                         (let [people [{:name (one-of "Alice" 42)}
                                       {:name (one-of "Bob" 99)}]]
-                          (vector-of Named people)
+                          (vector-of named people)
                           people)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -210,9 +210,9 @@
   (testing "tuple with between-constrained positions"
     ;; tuple types must reference named types/domains — between needs def
     (is (= [[5 "hi"]]
-           (m/query (do (def SmallInt (between 1 10))
+           (m/query (do (def small-int (between 1 10))
                         (let [v [(one-of 5 "x") (one-of "hi" 99)]]
-                          (tuple [SmallInt string] v)
+                          (tuple [small-int string] v)
                           v)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -375,8 +375,8 @@
     (let [ws (bind-in-scope
               (fn [e]
                 (-> e
-                    (bind/bind '(def SmallInt (between 1 10)))
-                    (bind/bind 't '(vector-of SmallInt)))))
+                    (bind/bind '(def small-int (between 1 10)))
+                    (bind/bind 't '(vector-of small-int)))))
           t-node (tree/cd ws ['ws 't])
           resolved (bind/resolve t-node)]
       (is (= :vector-of (:kind (:domain resolved))))

@@ -849,6 +849,14 @@
            (let [schema (bind/resolve-domain-schema env template-expr)]
              (bind/apply-domain-constraint env schema [target-expr])))})
 
+      ;; ── isa: shorthand alias for narrow ─────────────────────
+      ;; (isa x integer) ≡ (narrow x integer)
+      (defprim 'isa
+        {:bind
+         (fn [env [target-expr template-expr]]
+           (let [schema (bind/resolve-domain-schema env template-expr)]
+             (bind/apply-domain-constraint env schema [target-expr])))})
+
       ;; ── def: named definition ────────────────────────────────
       ;; (def Person {:name string :age integer})   → just a named value
       ;; (def SmallInt (between 1 10))              → just a named value
