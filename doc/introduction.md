@@ -68,7 +68,7 @@ When several variables are constrained together, mufl explores all valid combina
          (and (< x y)
               (= (+ x y) 6)
               [x y])))
-;=> [[1 5] [2 4]]
+;=> [[2 4] [1 5]]
 ```
 
 The system reasons bidirectionally: the `(= (+ x y) 6)` constraint narrows *both* `x` and `y`, and the `(< x y)` constraint eliminates symmetric pairs. The return expression `[x y]` collects the surviving combinations into vectors.
@@ -93,7 +93,7 @@ Constraints on derived values propagate backward to the inputs:
          (and (< x y)
               (= s 6)
               [x y s])))
-;=> [[1 5 6] [2 4 6]]
+;=> [[2 4 6] [1 5 6]]
 ```
 
 `mod` and `quot` work the same way:
@@ -141,7 +141,7 @@ Constraints on derived values propagate backward to the inputs:
              c (one-of 1 2 3)]
          (and (distinct [a b c])
               [a b c])))
-;=> [[1 2 3] [1 3 2] [2 1 3] [2 3 1] [3 1 2] [3 2 1]]
+;=> [[3 2 1] [2 3 1] [3 1 2] [1 3 2] [2 1 3] [1 2 3]]
 ```
 
 All 6 permutations — no duplicates within any solution.
@@ -160,7 +160,7 @@ All 6 permutations — no duplicates within any solution.
            (< x 4) x
            (> x 7) x
            :else 0)))
-;=> [0 1 2 3 8 9 10]
+;=> [1 2 3 8 9 10 0]
 ```
 
 When the condition can be decided at bind time (ground values), only the appropriate branch is taken — this enables recursion (more on that below).
@@ -491,7 +491,7 @@ Multi-parameter constraint functions:
              y (between 1 5)]
          (sums-to x y 8)
          [x y]))
-;=> [[3 5] [4 4] [5 3]]
+;=> [[5 3] [4 4] [3 5]]
 ```
 
 Constraint functions compose freely:
@@ -707,7 +707,7 @@ Reduce computing a value that feeds into a constraint:
              total (reduce + 0 v)]
          (and (> total 10)
               [v total])))
-;=> [[[1 6 7] 14] [[5 2 7] 14] [[5 6 3] 14] [[5 6 7] 18]]
+;=> [[[5 2 7] 14] [[5 6 3] 14] [[1 6 7] 14] [[5 6 7] 18]]
 ```
 
 Chaining HOFs together:
@@ -733,7 +733,7 @@ Putting it all together — find all Pythagorean triples where a, b, c ≤ 15:
               (<= b c)
               (= (+ (* a a) (* b b)) (* c c))
               [a b c])))
-;=> [[3 4 5] [5 12 13] [6 8 10] [9 12 15]]
+;=> [[3 4 5] [6 8 10] [5 12 13] [9 12 15]]
 ```
 
 No loops, no generate-and-test. You declare what a Pythagorean triple *is*, and the constraint engine finds them all.
