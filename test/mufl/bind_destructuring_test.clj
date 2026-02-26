@@ -73,8 +73,8 @@
   (testing "defn constructor destructuring narrows values"
     (is (= [[1 10] [2 10] [3 10]]
            (m/query (do (defn small-point [x y]
-                          (>= x 1) (<= x 3)
-                          {:x (integer x) :y (integer y)})
+                          (and (>= x 1) (<= x 3)
+                               {:x (integer x) :y (integer y)}))
                         (let [(small-point a b) {:x (one-of 0 1 2 3 4) :y 10}]
                           [a b]))))))
 

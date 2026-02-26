@@ -614,6 +614,7 @@
 
 (declare bind)
 (declare apply-domain-constraint)
+(declare bind-pattern)
 
 (defn substitute-expr
   "Walk an expression tree, replacing occurrences of symbols in the
@@ -687,171 +688,24 @@
        (throw (ex-info "Contradiction detected" {:op op :paths paths}))))))
 
 (defn destructure
-  "Destructure a pattern against an expression in a let binding.
+  "Destructure a pattern against an expression.
    
-   Dispatches through `:bind` on tree nodes when the pattern is a list
-   form `(head args...)`. The head symbol is looked up via `tree/find`,
-   and its `:bind` function is called with the pattern args plus the
-   value expression appended as the last arg.
-   
-   Map patterns:  {:key1 pat1 :key2 pat2}       → binds pat1 to (get expr :key1), etc.
-                  {:key1 pat1 . rest}            → rest gets remaining keys via dissoc.
-   
-   Vector patterns: [a b c]                      → binds a to (nth expr 0), etc.
-                    [a b . xs]                   → xs gets (drop 2 expr).
-   
-   List patterns:  (ks a b c)                    → destructuring operator dispatch
-                   (as name pattern)             → bind whole + inner destructure
-                   (DomainName inner-pattern)    → domain constraint + destructure
+   Creates a seed binding for the expression, extracts its domain,
+   then calls bind-pattern which handles maps, vectors, and operator
+   dispatch with domain propagation to every bound symbol.
    
    Returns the env with all bindings established."
   [env pattern expr]
   (cond
-    ;; Symbol pattern: bind sym to expr (base case for nested destructuring)
     (symbol? pattern)
     (bind env pattern expr)
 
-    ;; Map destructuring: {:key1 pat1 :key2 pat2 . rest}
-    ;; General patterns + optional dot rest. No :keys or :as sugar.
-    ;; Use (as m {:key pat}) operator for whole-value capture.
-    (map? pattern)
-    (let [dot-val    (get pattern '.)
-          ;; The actual key-pattern entries (everything except .)
-          entries    (dissoc pattern '.)
-          ;; Helpful error for legacy {:keys [...]} usage
-          _ (when (:keys pattern)
-              (throw (ex-info (str "The {:keys [...]} form is not supported. "
-                                   "Use {:x x :y y} or (ks x y) instead.")
-                              {:pattern pattern})))
-          ;; Validate that all keys are keywords
-          _ (doseq [k (keys entries)]
-              (when-not (keyword? k)
-                (throw (ex-info (str "Map destructuring keys must be keywords, got: " (pr-str k)
-                                     " (type: " (type k) ")")
-                                {:pattern pattern :key k}))))
-          ;; Bind the whole expression to a temp name
-          tmp (gensym "destruct__")
-          env (bind env tmp expr)
-          ;; For each key-pattern pair, bind via get
-          env (reduce (fn [e [k v-pattern]]
-                        (let [get-expr (list 'get tmp k)]
-                          (if (symbol? v-pattern)
-                            (bind e v-pattern get-expr)
-                            (destructure e v-pattern get-expr))))
-                      env
-                      entries)]
-      ;; Handle dot rest: bind remaining keys (dissoc the named keys)
-      (if dot-val
-        (let [remove-keys (keys entries)
-              dissoc-expr (apply list 'dissoc tmp remove-keys)]
-          (if (symbol? dot-val)
-            (bind env dot-val dissoc-expr)
-            (destructure env dot-val dissoc-expr)))
-        env))
-
-    ;; [a b c] — positional vector destructuring
-    ;; Supports: [a b . xs] (dot rest), [a b .] (bare dot)
-    ;; Extended: [a . mid c] (head/middle/last decomposition)
-    ;;   - 1 element after dot = rest binding (backward compatible)
-    ;;   - 2+ elements after dot = first is rest/middle, remaining are tail positionals
-    ;; No :as in vectors. Use (as v [a b c]) operator instead.
-    (vector? pattern)
-    (let [;; Check for dot syntax: [a b . xs]
-          dot-idx (.indexOf ^java.util.List pattern '.)
-          has-dot? (>= dot-idx 0)
-          ;; Elements before dot → positional bindings from start
-          positional (if has-dot?
-                       (subvec pattern 0 dot-idx)
-                       pattern)
-          ;; Elements after dot: partition into rest-pattern + tail-positionals
-          ;; 0 after dot = bare dot (no rest, no tail)
-          ;; 1 after dot = rest binding only (backward compatible)
-          ;; 2+ after dot = first is rest/middle, rest are tail positionals
-          after-dot (when has-dot?
-                      (subvec pattern (inc dot-idx)))
-          rest-pattern (when (and has-dot? (seq after-dot))
-                         (first after-dot))
-          tail-positionals (when (and has-dot? (> (count after-dot) 1))
-                             (subvec after-dot 1))
-          ;; Bind the whole expression to a temp name
-          tmp (gensym "destruct__")
-          env (bind env tmp expr)
-          ;; Bind head positional elements via (nth tmp i)
-          env (reduce (fn [e [i pat]]
-                        (if (symbol? pat)
-                          (bind e pat (list 'nth tmp i))
-                          ;; Nested destructuring
-                          (destructure e pat (list 'nth tmp i))))
-                      env
-                      (map-indexed vector positional))]
-      (if tail-positionals
-        ;; Head/middle/tail decomposition: resolve tmp to get total count
-        (let [;; Resolve the vector node to count children (same approach as drop)
-              vec-node (when-let [found (tree/find env [tmp])]
-                         (resolve found))
-              _ (when-not vec-node
-                  (throw (ex-info (str "Cannot resolve vector for tail positionals: " tmp)
-                                  {:pattern pattern})))
-              _ (when-not (:vector vec-node)
-                  (throw (ex-info (str "Not a vector node for tail positionals: " tmp)
-                                  {:pattern pattern})))
-              children (sort-by ::tree/name
-                                (clojure.core/filter #(integer? (::tree/name %))
-                                                     (tree/children vec-node)))
-              total (clojure.core/count children)
-              head-count (count positional)
-              tail-count (count tail-positionals)
-              min-required (+ head-count tail-count)
-              _ (when (> min-required total)
-                  (throw (ex-info (str "Vector has " total " elements but pattern requires at least "
-                                       min-required " (head: " head-count ", tail: " tail-count ")")
-                                  {:pattern pattern :total total :required min-required})))
-              middle-start head-count
-              middle-end (- total tail-count)
-              ;; Bind tail positionals via (nth tmp concrete-index) from the end
-              env (reduce (fn [e [i pat]]
-                            (let [idx (+ middle-end i)]
-                              (if (symbol? pat)
-                                (bind e pat (list 'nth tmp idx))
-                                (destructure e pat (list 'nth tmp idx)))))
-                          env
-                          (map-indexed vector tail-positionals))
-              ;; Bind middle/rest as a slice: build vector of (nth tmp i) for range [middle-start, middle-end)
-              middle-exprs (mapv (fn [i] (list 'nth tmp i))
-                                 (clojure.core/range middle-start middle-end))]
-          (if (symbol? rest-pattern)
-            (bind env rest-pattern (vec middle-exprs))
-            (destructure env rest-pattern (vec middle-exprs))))
-        ;; Simple rest (0 or 1 element after dot) — original behavior
-        (if rest-pattern
-          (let [drop-n (count positional)
-                rest-expr (list 'drop drop-n tmp)]
-            (if (symbol? rest-pattern)
-              (bind env rest-pattern rest-expr)
-              (destructure env rest-pattern rest-expr)))
-          env)))
-
-    ;; (head args...) — look up head, dispatch via :bind with value appended
-    ;; Convention: destructure calls (:bind node) with (concat pattern-args [value])
-    ;; as a vector with ^:destructuring metadata. The :bind function uses
-    ;; (last args) to get the value being destructured and (butlast args)
-    ;; for the pattern elements.
-    (seq? pattern)
-    (let [[head & args] pattern
-          node (tree/find env [head])
-          _ (when-not node
-              (throw (ex-info (str "Unresolved pattern head: " head)
-                              {:pattern pattern})))
-          resolved (resolve node)]
-      (cond
-        ;; Node has :bind — call it with pattern args + value appended
-        (:bind resolved)
-        ((:bind resolved) env (with-meta (vec (concat args [expr]))
-                                {:destructuring true}))
-
-        :else
-        (throw (ex-info (str "No :bind for pattern head: " head)
-                        {:pattern pattern}))))
+    (or (map? pattern) (vector? pattern) (seq? pattern))
+    (let [seed-sym (gensym "seed_")
+          env' (bind env seed-sym expr)
+          seed-domain (domain-of env' [seed-sym])
+          [env'' _bound-syms] (bind-pattern env' pattern seed-sym seed-domain)]
+      env'')
 
     :else
     (throw (ex-info "Invalid destructuring pattern" {:pattern pattern}))))
@@ -1202,6 +1056,138 @@
             result-root (apply-schema env' resolved-path schema)]
         (or (tree/cd result-root my-pos) result-root)))))
 
+;; ════════════════════════════════════════════════════════════════
+;; Multi-branch fn call support
+;; ════════════════════════════════════════════════════════════════
+
+(declare bind call-fn)
+
+(defn- bind-param
+  "Bind a single param pattern against an arg path in the call scope.
+   Handles: symbols, type wrappers (integer x), literals, maps, vectors."
+  [env param arg-path]
+  (cond
+    ;; Simple symbol: link to arg
+    (symbol? param)
+    (let [e (tree/ensure-path env [param])]
+      (tree/upd e [param] #(assoc % :link arg-path)))
+
+    ;; Type wrapper: (integer x), (string x), etc.
+    (seq? param)
+    (let [raw-sym (last param)
+          wrapper-head (first param)
+          e (tree/ensure-path env [raw-sym])
+          e (tree/upd e [raw-sym] #(assoc % :link arg-path))]
+      (bind e (list wrapper-head raw-sym)))
+
+    ;; Literal: constrain arg to equal this value
+    (or (number? param) (string? param) (keyword? param) (boolean? param))
+    (let [d (domain-of (tree/root env) arg-path)
+          literal-dom (dom/finite #{param})
+          narrowed (dom/intersect (or d dom/any) literal-dom)]
+      (if (dom/void? narrowed)
+        (throw (ex-info "Pattern match failed: literal mismatch"
+                        {:pattern param :domain d}))
+        (let [env' (set-domain (tree/root env) arg-path narrowed)]
+          (or (tree/cd env' (tree/position env)) env'))))
+
+    ;; Map/vector pattern: use bind-pattern with a seed linked to the arg
+    (or (map? param) (vector? param))
+    (let [gsym (gensym "param_")
+          e (tree/ensure-path env [gsym])
+          e (tree/upd e [gsym] #(assoc % :link arg-path))
+          seed-domain (domain-of (tree/root e) arg-path)
+          [e' _] (bind-pattern e param gsym seed-domain)]
+      e')
+
+    :else
+    (throw (ex-info "Invalid param pattern" {:param param}))))
+
+(defn- call-branch
+  "Execute a single fn branch: bind params to args, evaluate body,
+   link caller to result. Returns the caller env with link, or throws
+   on contradiction."
+  [env-after-args arg-paths params body my-pos fn-name]
+  (let [;; Create a call scope as child of current position
+        call-name (gensym "call")
+        env-with-scope (tree/ensure-path env-after-args [call-name])
+        call-env (tree/cd env-with-scope [call-name])
+        ;; Bind each param pattern to its arg
+        env-bound (reduce (fn [e [param arg-path]]
+                            (bind-param e param arg-path))
+                          call-env
+                          (map vector params arg-paths))
+        ;; Create result sub-node and evaluate body there
+        result-name (gensym "result_")
+        env-with-result (tree/ensure-path env-bound [result-name])
+        result-env (tree/cd env-with-result [result-name])
+        result (bind result-env body)
+        result-pos (tree/position result)]
+    ;; Link caller to result
+    (let [result-root (tree/root result)
+          caller (tree/cd result-root my-pos)
+          target-path (or (:link result) result-pos)
+          result-node (tree/cd result-root target-path)
+          has-value? (or (:domain result-node)
+                         (:map result-node)
+                         (:vector result-node)
+                         (and (:link result-node)
+                              (not= (:link result-node) target-path)))]
+      (if has-value?
+        (assoc caller :link target-path)
+        caller))))
+
+(defn- call-fn
+  "Call a multi-branch fn. Evaluates args once, then tries each branch
+   in order. First satisfiable branch wins. Falls back to default."
+  [env {:keys [branches default]} args fn-name]
+  (let [my-pos (tree/position env)
+        ;; Evaluate all arg expressions in the CALLER's scope first
+        [env-after-args arg-paths]
+        (reduce (fn [[e paths] arg-expr]
+                  (let [[e' path] (ensure-node-abs e arg-expr)]
+                    [e' (conj paths path)]))
+                [env []]
+                args)
+        n-args (count args)]
+    ;; Try each branch in order
+    (loop [remaining branches
+           last-err nil]
+      (if (empty? remaining)
+        ;; No branch matched — try default
+        (if default
+          (let [result (bind env-after-args default)
+                result-root (tree/root result)
+                caller (tree/cd result-root my-pos)
+                target-path (or (:link result) (tree/position result))
+                result-node (tree/cd result-root target-path)
+                has-value? (or (:domain result-node)
+                               (:map result-node)
+                               (:vector result-node)
+                               (and (:link result-node)
+                                    (not= (:link result-node) target-path)))]
+            (if has-value?
+              (assoc caller :link target-path)
+              caller))
+          (throw (or last-err
+                     (ex-info (str "No matching branch for fn: " fn-name)
+                              {:fn fn-name :n-args n-args}))))
+        (let [{:keys [params body]} (first remaining)]
+          (if (not= (count params) n-args)
+            ;; Arity mismatch — skip this branch
+            (recur (rest remaining) last-err)
+            ;; Try this branch
+            (let [result (try
+                           (call-branch env-after-args arg-paths params body my-pos fn-name)
+                           (catch clojure.lang.ExceptionInfo e
+                             ;; Recursion depth errors propagate immediately
+                             (when (contains? (ex-data e) :depth)
+                               (throw e))
+                             e))]
+              (if (instance? Throwable result)
+                (recur (rest remaining) result)
+                result))))))))
+
 (defn bind
   "Bind an expression into the environment tree.
 
@@ -1244,44 +1230,7 @@
                  (throw (ex-info (str "Recursion depth limit exceeded (depth=" *call-depth* ")")
                                  {:depth *call-depth* :fn head})))
                (binding [*call-depth* (inc *call-depth*)]
-                 (let [{:keys [params body]} (:mufl-fn node)
-                       _ (when (not= (count params) (count args))
-                           (throw (ex-info (str "Arity mismatch: expected " (count params)
-                                                " args, got " (count args))
-                                           {:params params :args args :fn-name head})))
-                       my-pos (tree/position env)
-                       ;; Evaluate arg expressions in the CALLER's scope first.
-                       ;; This ensures (f (- n 1)) evaluates (- n 1) using the
-                       ;; caller's n, not the callee's param n which shadows it.
-                       [env-after-args arg-paths]
-                       (reduce (fn [[e paths] arg-expr]
-                                 (let [[e' path] (ensure-node-abs e arg-expr)]
-                                   [e' (conj paths path)]))
-                               [env []]
-                               args)
-                       ;; Create a call scope as child of current position
-                       call-name (gensym "call")
-                       env-with-scope (tree/ensure-path env-after-args [call-name])
-                       call-env (tree/cd env-with-scope [call-name])
-                       ;; Link each param to the pre-evaluated arg node
-                       env-bound (reduce (fn [e [param arg-path]]
-                                           (let [e (tree/ensure-path e [param])]
-                                             (tree/upd e [param]
-                                                       #(assoc % :link arg-path))))
-                                         call-env
-                                         (map vector params arg-paths))
-                       ;; Evaluate body in the call scope — this creates
-                       ;; the result node with domain/link in the call scope
-                       result (bind env-bound body)
-                       result-pos (tree/position result)]
-                   ;; The caller links to the result node in the call scope.
-                   ;; This way constraints on the caller propagate through.
-                   (let [result-root (tree/root result)
-                         ;; Navigate back to caller position
-                         caller (tree/cd result-root my-pos)
-                         ;; If result has a link, follow it for the final target
-                         target-path (or (:link result) result-pos)]
-                     (assoc caller :link target-path)))))
+                 (call-fn env (:mufl-fn node) args head)))
 
              :else
              (throw (ex-info (str "No :bind for form: " head) {:head head}))))
@@ -1323,3 +1272,420 @@
      (if return
        (bind bound return)
        bound))))
+
+;; ════════════════════════════════════════════════════════════════
+;; bind-pattern — domain-propagating destructuring
+;; ════════════════════════════════════════════════════════════════
+;;
+;; The primary destructuring path. Recursively decomposes patterns
+;; (symbols, maps, vectors, operator forms) against a seed binding,
+;; propagating domain information to every bound symbol.
+;;
+;; Protocol: (fn [env pattern seed-sym seed-domain] → [env' bound-syms])
+;;   env         — tree node at current scope position
+;;   pattern     — unevaluated syntax (symbol, map, vector, or list)
+;;   seed-sym    — symbol already bound in env to the value being destructured
+;;   seed-domain — domain of the seed (dom/any when unknown)
+;;   Returns [env' bound-syms] — updated env + ordered vector of all symbols bound
+;; ════════════════════════════════════════════════════════════════
+
+(declare bind-pattern bind-pattern-map bind-pattern-vec bind-pattern-operator)
+
+(defn- extract-field-domain
+  "Extract the domain for a specific map field key from a seed.
+   Checks the seed node's tree children first (structural maps),
+   then falls back to composite seed-domain info (:map-of), then dom/any."
+  [env seed-sym key seed-domain]
+  (or
+   ;; Try tree children — the common case for structural maps.
+   ;; When you (bind env :x 42) inside a map, the tree gets a child at [:x]
+   ;; with domain single(42). This reads that directly.
+   (when-let [found (tree/find env [seed-sym])]
+     (let [seed-node (resolve found)]
+       (when (:map seed-node)
+         (when-let [child (tree/cd seed-node [key])]
+           (let [target (resolve child)]
+             (:domain target))))))
+   ;; map-of composite → all values share the value domain
+   (when (= :map-of (:kind seed-domain))
+     (:value seed-domain))
+   ;; Fallback
+   dom/any))
+
+(defn- extract-element-domain
+  "Extract the domain for a vector element at index i.
+   Checks composite seed-domain info first (tuple per-position, vector-of uniform),
+   then falls back to tree children, then dom/any."
+  [env seed-sym i seed-domain]
+  (or
+   ;; Tuple composite: per-position domains
+   (when (= :tuple (:kind seed-domain))
+     (get (:elements seed-domain) i))
+   ;; Vector-of composite: uniform element domain
+   (when (= :vector-of (:kind seed-domain))
+     (:element seed-domain))
+   ;; Try tree children — structural vector with per-index children
+   (when-let [found (tree/find env [seed-sym])]
+     (let [seed-node (resolve found)]
+       (when (:vector seed-node)
+         (when-let [child (tree/cd seed-node [i])]
+           (let [target (resolve child)]
+             (:domain target))))))
+   ;; Fallback
+   dom/any))
+
+(defn domain-node
+  "Create a child binding with a known domain.
+   Uses the existing `bind` to create the node (which handles get/nth dispatch,
+   link creation, constraint watching, etc.), then narrows its domain to
+   the intersection of its current domain and `domain`.
+   This is mufl's equivalent of immucode's `typed-node`."
+  [env sym domain build-expr]
+  (let [env' (bind env sym build-expr)]
+    (if (and domain (not (dom/any? domain)))
+      (let [found (tree/find env' [sym])
+            _ (when-not found
+                (throw (ex-info (str "domain-node: cannot find just-bound symbol: " sym)
+                                {:sym sym})))
+            target (resolve found)
+            target-path (tree/position target)
+            current (or (:domain target) dom/any)
+            narrowed (dom/intersect current domain)]
+        (if (dom/void? narrowed)
+          (throw (ex-info "Domain contradiction in destructuring"
+                          {:sym sym :domain domain :current current}))
+          (-> (tree/root env')
+              (tree/put target-path :domain narrowed)
+              (tree/cd (tree/position env')))))
+      env')))
+
+(defn bind-pattern
+  "Recursively destructure a pattern against a seed symbol with domain propagation.
+   Returns [env' bound-syms] where bound-syms is an ordered vector of all
+   symbols bound (including scaffolding gensyms before user symbols)."
+  [env pattern seed-sym seed-domain]
+  (cond
+    ;; Symbol: trivial bind — link to seed with its domain
+    (symbol? pattern)
+    (let [env' (domain-node env pattern seed-domain seed-sym)]
+      [env' [pattern]])
+
+    ;; Map pattern: {:k1 pat1 :k2 pat2 . rest}
+    (map? pattern)
+    (bind-pattern-map env pattern seed-sym seed-domain)
+
+    ;; Vector pattern: [a b c] or [a b . xs]
+    (vector? pattern)
+    (bind-pattern-vec env pattern seed-sym seed-domain)
+
+    ;; List pattern (operator): (ks a b), (as m pat), etc.
+    (seq? pattern)
+    (bind-pattern-operator env pattern seed-sym seed-domain)
+
+    ;; Literal: constrain seed to equal this value
+    :else
+    (if (or (number? pattern) (string? pattern) (keyword? pattern)
+            (boolean? pattern) (nil? pattern))
+      (let [found (tree/find env [seed-sym])
+            _ (when-not found
+                (throw (ex-info "Cannot find seed for literal pattern"
+                                {:seed seed-sym :pattern pattern})))
+            target (resolve found)
+            target-path (tree/position target)
+            d (or (:domain target) dom/any)
+            literal-dom (dom/finite #{pattern})
+            narrowed (dom/intersect d literal-dom)]
+        (if (dom/void? narrowed)
+          (throw (ex-info "Literal pattern mismatch"
+                          {:pattern pattern :domain d}))
+          (let [env' (set-domain (tree/root env) target-path narrowed)
+                env' (or (tree/cd env' (tree/position env)) env')]
+            [env' []])))
+      (throw (ex-info "Unknown pattern form" {:pattern pattern})))))
+
+(defn bind-pattern-map
+  "Destructure a map pattern {:k1 pat1 :k2 pat2 . rest} with domain flow.
+   Extracts per-field domains from the seed's tree children or composite domain.
+   Returns [env' bound-syms]."
+  [env pattern seed-sym seed-domain]
+  (let [dot-val (get pattern '.)
+        entries (dissoc pattern '.)
+        ;; Helpful error for legacy {:keys [...]} usage
+        _ (when (:keys pattern)
+            (throw (ex-info (str "The {:keys [...]} form is not supported. "
+                                 "Use {:x x :y y} or (ks x y) instead.")
+                            {:pattern pattern})))
+        _ (doseq [k (keys entries)]
+            (when-not (keyword? k)
+              (throw (ex-info (str "Map destructuring keys must be keywords, got: " (pr-str k))
+                              {:pattern pattern :key k}))))
+        ;; Fold over entries, propagating field domains
+        [env syms]
+        (reduce
+         (fn [[env syms] [k v-pattern]]
+           (let [field-dom (extract-field-domain env seed-sym k seed-domain)
+                 get-expr (list 'get seed-sym k)]
+             (if (symbol? v-pattern)
+               ;; Simple symbol: bind directly with field domain
+               (let [env' (domain-node env v-pattern field-dom get-expr)]
+                 [env' (conj syms v-pattern)])
+               ;; Nested pattern: create scaffolding gensym, then recurse
+               (let [gsym (gensym "map_")
+                     env' (domain-node env gsym field-dom get-expr)
+                     [env'' inner-syms] (bind-pattern env' v-pattern gsym field-dom)]
+                 [env'' (into (conj syms gsym) inner-syms)]))))
+         [env []]
+         entries)]
+    ;; Handle dot-rest: {... . rest-pattern}
+    (if dot-val
+      (let [remove-keys (keys entries)
+            dissoc-expr (apply list 'dissoc seed-sym remove-keys)
+            ;; Rest domain: if seed is map-of, rest is also map-of; else any
+            rest-dom (if (= :map-of (:kind seed-domain))
+                       seed-domain
+                       dom/any)]
+        (if (symbol? dot-val)
+          (let [env' (domain-node env dot-val rest-dom dissoc-expr)]
+            [env' (conj syms dot-val)])
+          ;; Nested pattern on rest
+          (let [gsym (gensym "maprest_")
+                env' (domain-node env gsym rest-dom dissoc-expr)
+                [env'' inner-syms] (bind-pattern env' dot-val gsym rest-dom)]
+            [env'' (into (conj syms gsym) inner-syms)])))
+      [env syms])))
+
+(defn bind-pattern-vec
+  "Destructure a vector pattern [a b c] or [a b . xs] with domain flow.
+   Supports tail decomposition: [a . mid c] where mid captures the middle.
+   Extracts per-element domains from tuple/vector-of composites or tree children.
+   Returns [env' bound-syms]."
+  [env pattern seed-sym seed-domain]
+  (let [dot-idx (.indexOf ^java.util.List pattern '.)
+        has-dot? (>= dot-idx 0)
+        positional (if has-dot?
+                     (subvec pattern 0 dot-idx)
+                     pattern)
+        after-dot (when has-dot? (subvec pattern (inc dot-idx)))
+        rest-pattern (when (and has-dot? (seq after-dot)) (first after-dot))
+        tail-positionals (when (and has-dot? (> (count after-dot) 1))
+                           (subvec after-dot 1))
+        ;; Fold over head positional elements
+        [env syms]
+        (reduce
+         (fn [[env syms] [i elem-pattern]]
+           (let [elem-dom (extract-element-domain env seed-sym i seed-domain)
+                 nth-expr (list 'nth seed-sym i)]
+             (if (symbol? elem-pattern)
+               (let [env' (domain-node env elem-pattern elem-dom nth-expr)]
+                 [env' (conj syms elem-pattern)])
+               (let [gsym (gensym "vec_")
+                     env' (domain-node env gsym elem-dom nth-expr)
+                     [env'' inner-syms] (bind-pattern env' elem-pattern gsym elem-dom)]
+                 [env'' (into (conj syms gsym) inner-syms)]))))
+         [env []]
+         (map-indexed vector positional))]
+    (cond
+      ;; Tail positionals: [a . mid c d]
+      tail-positionals
+      (let [seed-node (when-let [found (tree/find env [seed-sym])]
+                        (resolve found))
+            _ (when-not (and seed-node (:vector seed-node))
+                (throw (ex-info "Cannot resolve vector for tail positionals"
+                                {:pattern pattern :seed seed-sym})))
+            children (sort-by ::tree/name
+                              (clojure.core/filter #(integer? (::tree/name %))
+                                                   (tree/children seed-node)))
+            total (clojure.core/count children)
+            head-count (count positional)
+            tail-count (count tail-positionals)
+            _ (when (> (+ head-count tail-count) total)
+                (throw (ex-info (str "Vector has " total " elements but pattern requires at least "
+                                     (+ head-count tail-count))
+                                {:pattern pattern :total total})))
+            middle-start head-count
+            middle-end (- total tail-count)
+            ;; Bind tail positionals from the end
+            [env syms]
+            (reduce
+             (fn [[env syms] [i pat]]
+               (let [idx (+ middle-end i)
+                     elem-dom (extract-element-domain env seed-sym idx seed-domain)
+                     nth-expr (list 'nth seed-sym idx)]
+                 (if (symbol? pat)
+                   (let [env' (domain-node env pat elem-dom nth-expr)]
+                     [env' (conj syms pat)])
+                   (let [gsym (gensym "tail_")
+                         env' (domain-node env gsym elem-dom nth-expr)
+                         [env'' inner-syms] (bind-pattern env' pat gsym elem-dom)]
+                     [env'' (into (conj syms gsym) inner-syms)]))))
+             [env syms]
+             (map-indexed vector tail-positionals))
+            ;; Build middle slice as vector of nth expressions
+            middle-exprs (mapv (fn [i] (list 'nth seed-sym i))
+                               (clojure.core/range middle-start middle-end))
+            rest-dom (if (= :vector-of (:kind seed-domain))
+                       seed-domain
+                       dom/any)]
+        (if rest-pattern
+          (if (symbol? rest-pattern)
+            (let [env' (domain-node env rest-pattern rest-dom (vec middle-exprs))]
+              [env' (conj syms rest-pattern)])
+            (let [gsym (gensym "mid_")
+                  env' (domain-node env gsym rest-dom (vec middle-exprs))
+                  [env'' inner-syms] (bind-pattern env' rest-pattern gsym rest-dom)]
+              [env'' (into (conj syms gsym) inner-syms)]))
+          [env syms]))
+
+      ;; Simple rest: [a b . xs]
+      rest-pattern
+      (let [drop-n (count positional)
+            rest-expr (list 'drop drop-n seed-sym)
+            rest-dom (cond
+                       ;; Tuple: remaining elements form a sub-tuple
+                       (= :tuple (:kind seed-domain))
+                       (let [remaining (vec (drop drop-n (:elements seed-domain)))]
+                         (if (seq remaining)
+                           (dom/tuple-dom remaining)
+                           dom/any))
+                       ;; Vector-of: rest keeps the same element type
+                       (= :vector-of (:kind seed-domain))
+                       seed-domain
+                       :else dom/any)]
+        (if (symbol? rest-pattern)
+          (let [env' (domain-node env rest-pattern rest-dom rest-expr)]
+            [env' (conj syms rest-pattern)])
+          (let [gsym (gensym "rest_")
+                env' (domain-node env gsym rest-dom rest-expr)
+                [env'' inner-syms] (bind-pattern env' rest-pattern gsym rest-dom)]
+            [env'' (into (conj syms gsym) inner-syms)])))
+
+      ;; No rest — just head positionals
+      :else [env syms])))
+
+(defn- fn-destruct-branch
+  "Try to invert a single fn branch for destructuring.
+   Works for branches with symbol/type-wrapper/literal params.
+   If body is (and constraint... value), splits constraints from value template.
+   Returns [env' bound-syms] or throws on contradiction."
+  [env params body pattern-syms seed-sym seed-domain]
+  (let [;; Classify params and build substitution
+        param-info (mapv (fn [p ps]
+                           (cond
+                             (symbol? p)
+                             {:kind :symbol :raw-sym p :pattern-sym ps}
+
+                             (seq? p)
+                             {:kind :type-wrapper :raw-sym (last p) :wrapper (first p)
+                              :pattern-sym ps}
+
+                             (or (number? p) (string? p) (keyword? p) (boolean? p))
+                             {:kind :literal :value p :pattern-sym ps}
+
+                             ;; Complex patterns (maps, vectors) → can't invert
+                             :else
+                             (throw (ex-info "Cannot invert branch with complex param pattern"
+                                             {:param p}))))
+                         params pattern-syms)
+        ;; Substitution: symbol/type-wrapper raw-syms → pattern-syms
+        substitution (into {} (keep (fn [{:keys [kind raw-sym pattern-sym]}]
+                                      (when (#{:symbol :type-wrapper} kind)
+                                        [raw-sym pattern-sym])))
+                            param-info)
+        ;; Split body: if (and ...), intermediates are constraints, last is value
+        [body-constraints body-value]
+        (if (and (seq? body) (= 'and (first body)))
+          [(butlast (rest body)) (last body)]
+          [[] body])
+        ;; Substitute to create destruct pattern and constraints
+        destruct-pattern (substitute-expr body-value substitution)
+        destruct-constraints (mapv #(substitute-expr % substitution) body-constraints)
+        ;; Type constraints from wrapper params
+        param-constraints (keep (fn [{:keys [kind wrapper pattern-sym]}]
+                                  (when (= :type-wrapper kind)
+                                    [wrapper pattern-sym]))
+                                param-info)
+        ;; Literal params to bind
+        literal-bindings (keep (fn [{:keys [kind value pattern-sym]}]
+                                 (when (= :literal kind)
+                                   [pattern-sym value]))
+                               param-info)
+        ;; Destructure seed against inverted body pattern
+        [env' bound-syms] (bind-pattern env destruct-pattern seed-sym seed-domain)
+        ;; Apply body-level constraints (from and-wrapped body)
+        env' (reduce (fn [e c]
+                       (let [e' (bind e c)]
+                         (dissoc e' :link)))
+                     env'
+                     destruct-constraints)
+        ;; Bind literal params' pattern-syms to their literal values
+        env' (reduce (fn [e [ps val]]
+                       (let [e' (bind e ps val)]
+                         (dissoc e' :link)))
+                     env'
+                     literal-bindings)
+        ;; Apply param-level type constraints
+        env' (reduce (fn [e [wrapper-head target-sym]]
+                       (let [my-pos (tree/position e)
+                             [e' path] (ensure-node-abs e target-sym)
+                             wrapper-node (tree/find e' [wrapper-head])
+                             wrapper-resolved (when wrapper-node
+                                                (resolve wrapper-node))
+                             type-dom (:type-domain wrapper-resolved)]
+                         (if type-dom
+                           (let [d (domain-of (tree/root e') path)
+                                 narrowed (dom/intersect d type-dom)]
+                             (if (dom/void? narrowed)
+                               (throw (ex-info "Contradiction: destructuring type constraint"
+                                               {:wrapper wrapper-head
+                                                :target target-sym}))
+                               (let [e'' (set-domain (tree/root e') path narrowed)]
+                                 (or (tree/cd e'' my-pos) e''))))
+                           (let [e' (bind e (list wrapper-head target-sym))]
+                             (dissoc e' :link)))))
+                     env'
+                     param-constraints)]
+    [env' bound-syms]))
+
+(defn fn-destruct
+  "Derive a destructor from a multi-branch fn definition.
+   Tries each branch's inverse in order. First satisfiable wins."
+  [env {:keys [branches] :as mufl-fn} pattern-syms seed-sym seed-domain]
+  (let [n-syms (count pattern-syms)]
+    (loop [remaining branches
+           last-err nil]
+      (if (empty? remaining)
+        (throw (or last-err
+                   (ex-info "No matching branch for destructuring"
+                            {:pattern-syms pattern-syms})))
+        (let [{:keys [params body]} (first remaining)]
+          (if (not= (count params) n-syms)
+            (recur (rest remaining) last-err)
+            (let [result (try
+                           (fn-destruct-branch env params body pattern-syms
+                                               seed-sym seed-domain)
+                           (catch clojure.lang.ExceptionInfo e
+                             e))]
+              (if (instance? Throwable result)
+                (recur (rest remaining) result)
+                result))))))))
+
+(defn bind-pattern-operator
+  "Dispatch an operator pattern like (ks a b), (as m pat), (point x y).
+   Checks for :destruct (built-in operators), then :mufl-fn (user functions).
+   Returns [env' bound-syms]."
+  [env [head & args] seed-sym seed-domain]
+  (let [node (tree/find env [head])
+        _ (when-not node
+            (throw (ex-info (str "Unresolved pattern head: " head)
+                            {:pattern (cons head args)})))
+        resolved (resolve node)]
+    (cond
+      (:destruct resolved)
+      ((:destruct resolved) env args seed-sym seed-domain)
+
+      (:mufl-fn resolved)
+      (fn-destruct env (:mufl-fn resolved) args seed-sym seed-domain)
+
+      :else
+      (throw (ex-info (str "No :destruct or :mufl-fn for pattern head: " head)
+                      {:pattern (cons head args)})))))

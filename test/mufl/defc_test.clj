@@ -119,11 +119,10 @@
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest defn-multi-body
-  (testing "constraint function with multiple body expressions"
+  (testing "constraint function with and (single expression per branch)"
     (is (= [3 4 5 6 7]
            (m/query (do (defn bounded [x]
-                          (> x 2)
-                          (< x 8))
+                          (and (> x 2) (< x 8) x))
                         (let [n (between 1 10)]
                           (bounded n)
                           n)))))))

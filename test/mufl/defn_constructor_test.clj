@@ -197,11 +197,10 @@
                                [x y]))))))))
 
 (deftest constraint-function-multi-body
-  (testing "constraint function with multiple body forms"
+  (testing "constraint function with multiple body forms — use and"
     (is (= [3 4 5 6 7]
            (m/query (do (defn bounded [x]
-                          (> x 2)
-                          (< x 8))
+                          (and (> x 2) (< x 8) x))
                         (let [n (between 1 10)]
                           (bounded n)
                           n)))))))

@@ -152,8 +152,8 @@
   (testing "constructor destructuring narrows values"
     (is (= [["Alice" 30]]
            (m/query (do (defn person [name age]
-                          (<= age 150) (>= age 0)
-                          {:name (string name) :age (integer age)})
+                          (and (<= age 150) (>= age 0)
+                               {:name (string name) :age (integer age)}))
                         (let [(person name age) {:name "Alice" :age (one-of 30 200)}]
                           [name age])))))))
 

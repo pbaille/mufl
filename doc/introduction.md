@@ -10,7 +10,7 @@ The entry point is `query`. It returns a vector of all solutions. It accepts mul
 
 ## Values
 
-Literals work as you'd expect. A literal is a domain containing exactly one value.
+Literals work as you'd expect. A literal is a domain containing exactly one value. `query` always returns a vector of all solutions — a literal has exactly one, so you get a single-element vector.
 
 ```clojure
 (query 42)        ;=> [42]
@@ -21,14 +21,20 @@ Literals work as you'd expect. A literal is a domain containing exactly one valu
 
 ## Uncertain values
 
-`one-of` creates a variable that could be any of the given values.
+`one-of` creates a variable that could be any of the given values. Values can be of any type — integers, strings, keywords, mixed:
 
 ```clojure
 (query (let [x (one-of 1 2 3)] x))
 ;=> [1 2 3]
+
+(query (let [x (one-of "red" "green" "blue")] x))
+;=> ["red" "green" "blue"]
+
+(query (let [x (one-of 1 "hello" :ok)] x))
+;=> [1 "hello" :ok]
 ```
 
-`between` creates an integer domain from lo to hi (inclusive).
+`between` creates an integer range from lo to hi (inclusive).
 
 ```clojure
 (query (let [x (between 1 5)] x))
@@ -39,15 +45,31 @@ Nothing interesting yet — we're just enumerating. The power comes when we add 
 
 ## Constraints
 
-Relational operators don't return booleans — they *narrow* domains.
+In most languages, `(> x 2)` is a question — it returns a boolean. The value `x` is untouched; you get `true` or `false`, then decide what to do with it.
+
+mufl has no booleans. `(> x 2)` removes every value ≤ 2 from `x`'s domain and **returns `x`** — the narrowed value itself, not a truth value. The constraint is the computation.
 
 ```clojure
 (query (let [x (one-of 1 2 3 4 5)]
-         (and (> x 2) x)))
+         (> x 2)))
 ;=> [3 4 5]
 ```
 
-`(> x 2)` doesn't test `x` — it removes every value ≤ 2 from `x`'s domain. `and` threads constraints: each one further narrows what's possible.
+All relational operators — `=`, `!=`, `<`, `>`, `<=`, `>=` — work this way: narrow the domain, return the value. No boolean intermediary, no separate test-then-act step.
+
+The same principle extends to every narrowing operation in mufl. Numeric constraints — `even`, `odd`, `pos`, `neg`, `zero` — filter by property. Type constraints — `integer`, `string`, `number`, `keyword`, `boolean` — filter by type:
+
+```clojure
+(query (let [x (between 1 10)]
+         (and (even x) x)))
+;=> [2 4 6 8 10]
+
+(query (let [x (one-of 1 "hello" :ok)]
+         (integer x)))
+;=> [1]
+```
+
+`and` sequences constraints — each expression narrows further, and the last is the return value:
 
 ```clojure
 (query (let [x (one-of 1 2 3 4 5)]
@@ -58,9 +80,9 @@ Relational operators don't return booleans — they *narrow* domains.
 ;=> [2 4]
 ```
 
-## Multiple variables
+Since `(!= x 3)` already returns `x`, the trailing `x` is technically redundant here. But making the return value explicit in `and` is often clearer — the key point is that constraints *are* value-returning expressions, not boolean tests.
 
-When several variables are constrained together, mufl explores all valid combinations.
+When multiple variables are involved, constraints propagate across all of them. The system finds every valid combination:
 
 ```clojure
 (query (let [x (one-of 1 2 3 4 5)
@@ -71,115 +93,21 @@ When several variables are constrained together, mufl explores all valid combina
 ;=> [[2 4] [1 5]]
 ```
 
-The system reasons bidirectionally: the `(= (+ x y) 6)` constraint narrows *both* `x` and `y`, and the `(< x y)` constraint eliminates symmetric pairs. The return expression `[x y]` collects the surviving combinations into vectors.
+`(= (+ x y) 6)` narrows *both* `x` and `y`. `(< x y)` eliminates symmetric pairs. The solver finds all combinations that satisfy every constraint simultaneously.
 
-## Arithmetic
+## Control flow
 
-Arithmetic expressions create *derived* domains. If the inputs aren't ground, the result is the set of all possible outputs.
+Since there are no booleans, control flow doesn't test truth values — it explores which constraints are *satisfiable* and combines the results.
 
-```clojure
-(query (let [x (one-of 1 2 3)
-             s (+ x 10)]
-         s))
-;=> [11 12 13]
-```
-
-Constraints on derived values propagate backward to the inputs:
+`or` tries each branch and unions the resulting domains:
 
 ```clojure
-(query (let [x (one-of 1 2 3 4 5)
-             y (one-of 1 2 3 4 5)
-             s (+ x y)]
-         (and (< x y)
-              (= s 6)
-              [x y s])))
-;=> [[2 4 6] [1 5 6]]
-```
-
-`mod` and `quot` work the same way:
-
-```clojure
-;; Multiples of 3 up to 20
-(query (let [x (between 1 20)]
-         (and (= (mod x 3) 0) x)))
-;=> [3 6 9 12 15 18]
-```
-
-`abs` computes absolute value. It propagates bidirectionally — constraining the result narrows both positive and negative possibilities of the input:
-
-```clojure
-(query (abs -5))
-;=> [5]
-
-(query (let [x (one-of -3 -2 -1 0 1 2 3)]
-         (abs x)))
-;=> [0 1 2 3]
-
-;; Constraining (abs x) narrows x to both signs
-(query (let [x (one-of -3 -2 -1 0 1 2 3)]
-         (and (= (abs x) 2) x)))
-;=> [-2 2]
-```
-
-`min` and `max` return the smaller or larger of two values:
-
-```clojure
-(query (min 3 2))
-;=> [2]
-
-(query (max 3 5))
-;=> [5]
-```
-
-## Distinct
-
-`distinct` says all variables in a vector must take different values.
-
-```clojure
-(query (let [a (one-of 1 2 3)
-             b (one-of 1 2 3)
-             c (one-of 1 2 3)]
-         (and (distinct [a b c])
-              [a b c])))
-;=> [[3 2 1] [2 3 1] [3 1 2] [1 3 2] [2 1 3] [1 2 3]]
-```
-
-All 6 permutations — no duplicates within any solution.
-
-## Branching
-
-`if` and `cond` produce the union of values from all satisfiable branches.
-
-```clojure
-(query (let [x (between 1 10)]
-         (if (< x 5) x 10)))
-;=> [1 2 3 4 10]
-
-(query (let [x (between 1 10)]
-         (cond
-           (< x 4) x
-           (> x 7) x
-           :else 0)))
-;=> [1 2 3 8 9 10 0]
-```
-
-When the condition can be decided at bind time (ground values), only the appropriate branch is taken — this enables recursion (more on that below).
-
-## Disjunction
-
-`or` unions the domains across branches:
-
-```clojure
-(query (let [x (between 1 10)]
-         (and (or (= x 3) (= x 7)) x)))
-;=> [3 7]
-
 (query (let [x (between 1 10)]
          (and (or (< x 3) (> x 7)) x)))
 ;=> [1 2 8 9 10]
 ```
 
-`not` flips a relational constraint:
+`not` flips a relational constraint — `(not (< x 3))` becomes `(>= x 3)`:
 
 ```clojure
 (query (let [x (one-of 1 2 3 4 5)]
@@ -187,31 +115,7 @@ When the condition can be decided at bind time (ground values), only the appropr
 ;=> [3 4 5]
 ```
 
-## Predicates
-
-Predicates act as constraints — they don't return booleans, they narrow domains. mufl provides numeric predicates (`even`, `odd`, `pos`, `neg`, `zero`) and type constraints (`number`, `string`, `keyword`, `integer`, `boolean`) which also serve as type domains in `def` schemas.
-
-```clojure
-(query (let [x (between 1 10)]
-         (and (even x) x)))
-;=> [2 4 6 8 10]
-```
-
-```clojure
-(query (let [x (one-of -3 -2 -1 0 1 2 3)]
-         (and (pos x) x)))
-;=> [1 2 3]
-```
-
-Type domains double as constraints — used nullary in schemas, unary to constrain:
-
-```clojure
-(query (let [x (one-of 1 2 "hello" "world" :ok)]
-         (and (number x) x)))
-;=> [1 2]
-```
-
-Predicates compose naturally with `and` and `or`:
+Constraints compose naturally through `and` and `or`:
 
 ```clojure
 ;; Even AND positive
@@ -225,11 +129,41 @@ Predicates compose naturally with `and` and `or`:
 ;=> [-3 -1 2 4]
 ```
 
-You can also define your own predicates with `defn` (covered below) — predicates in mufl are just constraint functions.
+### `if` and `cond`
+
+In a conventional language, `if` evaluates a boolean and takes one branch. In mufl, `if` tries the condition as a narrowing operation:
+
+- If only one branch is satisfiable → takes it immediately.
+- If both branches are satisfiable → explores both, returns the union of their solutions.
+
+```clojure
+(query (let [x (between 1 10)]
+         (if (< x 5) x 10)))
+;=> [1 2 3 4 10]
+```
+
+For values 1–4, `(< x 5)` is satisfiable — the then-branch yields `x`. For values 5–10, the negation `(>= x 5)` holds — the else-branch yields `10`. The result is the union of both.
+
+`cond` chains multiple branches, each tried as a constraint:
+
+```clojure
+(query (let [x (between 1 10)]
+         (cond
+           (< x 4) x
+           (> x 7) x
+           :else 0)))
+;=> [1 2 3 8 9 10 0]
+```
+
+When the condition is decidable — ground values, no uncertainty — exactly one branch is taken eagerly. This is what makes recursion work: a recursive call with ground arguments resolves `if` at bind time, the base case terminates, and the recursive case continues. Without eager resolution, both branches would be explored and recursion would never bottom out.
 
 ## Functions
 
-Functions are defined with `fn` and work as closures:
+`fn` creates a **bidirectional** computation. A function works in expression position (call it to construct a value) *and* in pattern position (use it to destructure a value). This isn't a special mode you opt into — it's what functions are in mufl.
+
+### Basic usage
+
+Functions are closures. Constraints propagate through function calls:
 
 ```clojure
 (query (let [double (fn [x] (+ x x))
@@ -240,23 +174,175 @@ Functions are defined with `fn` and work as closures:
 
 The constraint `(= (double n) 6)` propagates backward through the function body: `x + x = 6` implies `x = 3`.
 
-## Recursion
+### Bidirectionality
 
-Recursive functions work when the arguments are ground at each call site. `if` eagerly resolves which branch to take when the test is decidable, which makes the base case terminate the recursion.
+The body of a function is an invertible template. In expression position it constructs; in pattern position it destructures.
 
 ```clojure
-(query (let [fact (fn [n]
-                    (if (= n 0) 1 (* n (fact (- n 1)))))]
+;; Define a function — body is the template
+(query (let [point (fn [x y] {:x (integer x) :y (integer y)})]
+         ;; Expression position → constructs a value
+         (point 1 2)))
+;=> [{:x 1 :y 2}]
+
+;; Pattern position → destructures a value
+(query (let [point (fn [x y] {:x (integer x) :y (integer y)})
+             (point a b) {:x 1 :y 2}]
+         [a b]))
+;=> [[1 2]]
+```
+
+The destructor inverts the body: `{:x (integer x) :y (integer y)}` becomes a destructuring pattern that extracts `:x` and `:y` with `integer` type guards. Parameters with type wrappers constrain the bound values in both directions.
+
+Destructuring narrows values — only domain members that fit the pattern survive:
+
+```clojure
+(query (let [point (fn [x y] {:x (integer x) :y (integer y)})
+             (point a b) {:x (one-of 1 "hello" 2) :y 10}]
+         [a b]))
+;=> [[1 10] [2 10]]
+```
+
+`(point a b) {:x (one-of 1 "hello" 2) :y 10}` means "destructure this map as a point" — the `integer` guard eliminates `"hello"` from `a`'s domain.
+
+### Body-level constraints
+
+Each branch has a single expression. Use `and` to combine constraints with the value template — the intermediate expressions narrow, and the last expression is the return value. These constraints apply in both directions:
+
+```clojure
+(query (let [small-point (fn [x y]
+                           (and (>= x 1) (<= x 3)
+                                {:x (integer x) :y (integer y)}))
+             (small-point a b) {:x (one-of 0 1 2 3 4) :y 10}]
+         [a b]))
+;=> [[1 10] [2 10] [3 10]]
+```
+
+The constraints `(>= x 1) (<= x 3)` in the `and` eliminate 0 and 4 from `a`'s domain during destructuring.
+
+### Parameter type wrappers
+
+Wrapping a parameter in a type constrains it at call time *and* during destructuring:
+
+```clojure
+(query (let [point (fn [(integer x) (integer y)] {:x x :y y})]
+         ;; At call time: args must be integers
+         (point 1 2)))
+;=> [{:x 1 :y 2}]
+
+;; During destructuring: extracted values are narrowed to integers
+(query (let [point (fn [(integer x) (integer y)] {:x x :y y})
+             (point a b) {:x (one-of 1 "hello" 2) :y 10}]
+         [a b]))
+;=> [[1 10] [2 10]]
+```
+
+### `defn` — naming functions
+
+`defn` is sugar for `(def name (fn ...))`. It names a function, nothing more:
+
+```clojure
+(defn point [x y] {:x (integer x) :y (integer y)})
+;; ≡ (def point (fn [x y] {:x (integer x) :y (integer y)}))
+```
+
+Since `fn` is inherently bidirectional, `defn` inherits both call and destructure:
+
+```clojure
+(query (do (defn point [x y] {:x (integer x) :y (integer y)})
+           (point 1 2)))
+;=> [{:x 1 :y 2}]
+
+(query (do (defn point [x y] {:x (integer x) :y (integer y)})
+           (let [(point a b) {:x 1 :y 2}]
+             [a b])))
+;=> [[1 2]]
+```
+
+Destructors compose with `as` to bind the whole value alongside extracted parts:
+
+```clojure
+(query (do (defn point [x y] {:x (integer x) :y (integer y)})
+           (let [(as p (point x y)) {:x (one-of 1 2 3) :y 10}]
+             (and (> x 1) [p x y]))))
+;=> [[{:x 2 :y 10} 2 10] [{:x 3 :y 10} 3 10]]
+```
+
+### Named constraint functions
+
+Since function bodies are constraint expressions, `defn` naturally creates named constraints:
+
+```clojure
+(query (defn positive [x] (> x 0))
+       (defn ordered [a b] (< a b))
+       (let [x (one-of -1 0 1 2 3)
+             y (one-of -1 0 1 2 3)]
+         (positive x)
+         (positive y)
+         (ordered x y)
+         [x y]))
+;=> [[1 2] [1 3] [2 3]]
+```
+
+`positive` and `ordered` are ordinary functions — their bodies are constraints that narrow the arguments. They work in expression position to filter domains.
+
+### Multi-branch functions
+
+`fn` supports multiple branches — each vector starts a new clause, tried in order. The first satisfiable branch wins:
+
+```clojure
+(query (let [f (fn [0] :zero
+                   [1] :one
+                   [n] :other)]
+         (f 0)))
+;=> [:zero]
+```
+
+Params support the full pattern language — literals, type wrappers, destructuring:
+
+```clojure
+(query (let [describe (fn [(integer x)] :int
+                          [(string x)]  :str)]
+         [(describe 42) (describe "hi")]))
+;=> [[:int :str]]
+```
+
+Branches can have different arities:
+
+```clojure
+(query (let [f (fn [x]   (* x 2)
+                   [x y] (+ x y))]
+         [(f 5) (f 3 4)]))
+;=> [[10 7]]
+```
+
+An optional trailing expression (not preceded by a vector) is the default — used when no branch matches:
+
+```clojure
+(query (let [f (fn [0] :zero
+                   42)]
+         (f 5)))
+;=> [42]
+```
+
+## Recursion
+
+Multi-branch makes recursion natural — the base case is a pattern, no `if` needed:
+
+```clojure
+(query (let [fact (fn [0] 1
+                      [n] (* n (fact (- n 1))))]
          (fact 5)))
 ;=> [120]
 
-(query (let [fib (fn [n]
-                   (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))]
+(query (let [fib (fn [0] 0
+                      [1] 1
+                      [n] (+ (fib (- n 1)) (fib (- n 2))))]
          (fib 10)))
 ;=> [55]
 ```
 
-Closures and recursion compose naturally:
+Single-branch with `if` still works when you prefer it:
 
 ```clojure
 (query (let [base 2
@@ -335,7 +421,7 @@ It works on rest-pattern results too:
 
 ## Destructuring
 
-Let bindings support map and vector destructuring, with full constraint propagation.
+Let bindings support map and vector destructuring, with full constraint propagation. Destructuring propagates domain information — each bound symbol gets the tightest domain the system can infer from the seed value.
 
 ```clojure
 ;; Map destructuring
@@ -363,7 +449,7 @@ Use the `as` operator to bind the whole value while also destructuring:
 
 ### Destructuring operators
 
-Destructuring operators are regular `:bind` nodes that work in pattern position. When `destructure` encounters a list pattern `(op args...)` against a value, it calls the operator's `:bind` function with the pattern args plus the value appended.
+Destructuring operators work exclusively in pattern position. When `let` encounters a list pattern `(op args...)`, the operator destructures the value — extracting sub-values and propagating domain information to each bound symbol.
 
 ```clojure
 ;; ks — keyword-symbol map destructuring
@@ -470,44 +556,6 @@ The general form is `[h₁ h₂ ... . rest t₁ t₂ ...]` where `h` elements bi
 ;=> [[{:y 2 :z 3} {:x 1 :y 2 :z 3}]]
 ```
 
-## named constraints (defn)
-
-`defn` defines a reusable constraint — a named function that narrows the caller's variables directly.
-
-```clojure
-(query (defn positive [x] (> x 0))
-       (let [n (one-of -1 0 1 2 3)]
-         (positive n)
-         n))
-;=> [1 2 3]
-```
-
-Multi-parameter constraint functions:
-
-```clojure
-(query (defn sums-to [a b target]
-         (= (+ a b) target))
-       (let [x (between 1 5)
-             y (between 1 5)]
-         (sums-to x y 8)
-         [x y]))
-;=> [[5 3] [4 4] [3 5]]
-```
-
-Constraint functions compose freely:
-
-```clojure
-(query (defn positive [x] (> x 0))
-       (defn ordered [a b] (< a b))
-       (let [x (one-of -1 0 1 2 3)
-             y (one-of -1 0 1 2 3)]
-         (positive x)
-         (positive y)
-         (ordered x y)
-         [x y]))
-;=> [[1 2] [1 3] [2 3]]
-```
-
 ## Domains (def and narrow)
 
 `def` binds a name to a value — it's just an alias. `narrow` constrains a value against a domain expression — scalar, composite, or structural.
@@ -552,16 +600,15 @@ Vector literals define tuple schemas — no need for the `tuple` wrapper:
 ;=> [[3 4]]
 ```
 
-named schemas and constraint functions combine:
+named schemas and constraints combine:
 
 ```clojure
 (query (def person {:name string :age (between 0 150)})
-       (defn adult [p] (>= (:age p) 18))
        (let [p {:name "Alice" :age (one-of 10 25 30)}]
          (narrow p person)
-         (adult p)
-         (:age p)))
-;=> [25 30]
+         (>= (:age p) 18)
+         p))
+;=> [{:name "Alice" :age 25} {:name "Alice" :age 30}]
 ```
 
 ## Type constructors: vector-of, tuple, map-of
@@ -721,6 +768,79 @@ Chaining HOFs together:
 ;=> [12]
 ```
 
+## Arithmetic
+
+Arithmetic expressions create *derived* domains. If the inputs aren't ground, the result is the set of all possible outputs.
+
+```clojure
+(query (let [x (one-of 1 2 3)
+             s (+ x 10)]
+         s))
+;=> [11 12 13]
+```
+
+Constraints on derived values propagate backward to the inputs:
+
+```clojure
+(query (let [x (one-of 1 2 3 4 5)
+             y (one-of 1 2 3 4 5)
+             s (+ x y)]
+         (and (< x y)
+              (= s 6)
+              [x y s])))
+;=> [[2 4 6] [1 5 6]]
+```
+
+`mod` and `quot` work the same way:
+
+```clojure
+;; Multiples of 3 up to 20
+(query (let [x (between 1 20)]
+         (and (= (mod x 3) 0) x)))
+;=> [3 6 9 12 15 18]
+```
+
+`abs` computes absolute value. It propagates bidirectionally — constraining the result narrows both positive and negative possibilities of the input:
+
+```clojure
+(query (abs -5))
+;=> [5]
+
+(query (let [x (one-of -3 -2 -1 0 1 2 3)]
+         (abs x)))
+;=> [0 1 2 3]
+
+;; Constraining (abs x) narrows x to both signs
+(query (let [x (one-of -3 -2 -1 0 1 2 3)]
+         (and (= (abs x) 2) x)))
+;=> [-2 2]
+```
+
+`min` and `max` return the smaller or larger of two values:
+
+```clojure
+(query (min 3 2))
+;=> [2]
+
+(query (max 3 5))
+;=> [5]
+```
+
+## Distinct
+
+`distinct` says all variables in a vector must take different values.
+
+```clojure
+(query (let [a (one-of 1 2 3)
+             b (one-of 1 2 3)
+             c (one-of 1 2 3)]
+         (and (distinct [a b c])
+              [a b c])))
+;=> [[3 2 1] [2 3 1] [3 1 2] [1 3 2] [2 1 3] [1 2 3]]
+```
+
+All 6 permutations — no duplicates within any solution.
+
 ## A classic: Pythagorean triples
 
 Putting it all together — find all Pythagorean triples where a, b, c ≤ 15:
@@ -760,7 +880,7 @@ Compare with `query`, which only returns the result expression:
 ;=> [[1 2] [1 3] [2 3]]
 ```
 
-`query+` is useful for inspection — you can see how every variable was bound in each solution, not just the ones you chose to return. Function definitions (`fn`) and named constraints (`defn`) are excluded — only value bindings appear.
+`query+` is useful for inspection — you can see how every variable was bound in each solution, not just the ones you chose to return. Function definitions (`fn`, `defn`) are excluded — only value bindings appear.
 
 ```clojure
 (query+ (defn positive [x] (> x 0))
@@ -781,13 +901,15 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `and` | Apply all constraints; return last expression |
 | `or` | Union of domains across branches |
 | `if` / `cond` | Branching — eager when decidable, deferred when not |
-| `fn` | Closure with constraint propagation through the body |
-| `defn` | named reusable constraint function |
-| `def` | named value binding — gives a name to any value |
+| `fn` | Bidirectional function — constructor in expression position, destructor in pattern position |
+| `defn` | Sugar for `(def name (fn ...))` — names a function |
+| `def` | Named value binding — gives a name to any value |
 | `narrow` | Constrain a value against a domain — scalar, composite, or structural |
 | `vector-of` | Constrain all vector elements to a type |
 | `tuple` | Per-position type constraints on a vector |
 | `map-of` | Constrain all map keys and values |
+| `ks` | Keyword-symbol map destructuring (pattern only) |
+| `as` | Bind whole value + inner destructuring (pattern only) |
 | `abs` | Absolute value — propagates bidirectionally |
 | `min` / `max` | Two-argument min/max on values |
 | `count` | Number of elements in a vector or map |

@@ -251,8 +251,8 @@
   (testing "constructor constraint narrows through as"
     (is (= [[{:x 1 :y 2} 1 2] [{:x 2 :y 2} 2 2] [{:x 3 :y 2} 3 2]]
            (m/query (do (defn small-point [x y]
-                          (>= x 1) (<= x 3)
-                          {:x (integer x) :y (integer y)})
+                          (and (>= x 1) (<= x 3)
+                               {:x (integer x) :y (integer y)}))
                         (let [(as p (small-point x y)) {:x (one-of 0 1 2 3 4) :y 2}]
                           [p x y])))))))
 
@@ -606,15 +606,15 @@
   (testing "constructor constraint narrows out-of-range values"
     (is (= [[1 10] [2 10] [3 10]]
            (m/query (do (defn small-x [x y]
-                          (>= x 1) (<= x 3)
-                          {:x (integer x) :y (integer y)})
+                          (and (>= x 1) (<= x 3)
+                               {:x (integer x) :y (integer y)}))
                         (let [(small-x x y) {:x (one-of 0 1 2 3 4) :y 10}]
                           [x y]))))))
 
   (testing "constructor + as — narrows and captures whole"
     (is (= [[{:x 2 :y 10} 2 10] [{:x 3 :y 10} 3 10]]
            (m/query (do (defn small-x [x y]
-                          (>= x 1) (<= x 3)
-                          {:x (integer x) :y (integer y)})
+                          (and (>= x 1) (<= x 3)
+                               {:x (integer x) :y (integer y)}))
                         (let [(as m (small-x x y)) {:x (one-of 0 1 2 3 4) :y 10}]
                           (and (> x 1) [m x y]))))))))
