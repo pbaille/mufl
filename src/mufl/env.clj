@@ -38,25 +38,38 @@
 (defn- type-domain-bind
   "Build a :bind fn for a type domain primitive (string, number, etc.).
    Expression-position only:
-   - Nullary: (string) → set own domain to string-dom
+   - Nullary: (integer) → create fresh variable with appropriate domain.
+     For numeric types (:integer, :number), uses an unbounded range
+     so range-based narrowing works. Other types use the type domain.
    - Unary: (string x) → constrain x to string-dom AND link to it
    Pattern-position destructuring is handled by :destruct (see type-domain-destruct)."
   [type-dom label]
-  (fn [env args]
-    (if (seq args)
-      ;; Unary: (string x) → constrain arg to type domain + link to it
-      (let [[arg] args
-            [env' path] (bind/ensure-node-abs env arg)
-            d (bind/domain-of (tree/root env') path)
-            narrowed (dom/intersect d type-dom)]
-        (if (dom/void? narrowed)
-          (throw (ex-info (str "Contradiction: no " label " values") {:arg arg}))
-          (let [env' (bind/set-domain (tree/root env') path narrowed)
-                caller (or (tree/cd env' (tree/position env)) env')]
-            ;; Link caller to the constrained arg so (integer x) evaluates to x
-            (assoc caller :link path))))
-      ;; Nullary: (string) → set own domain
-      (assoc env :domain type-dom))))
+  (let [numeric? (#{:integer :number} (:type type-dom))
+        ;; For numeric types, the working representation is an unbounded
+        ;; range — this enables range-based narrowing by the constraint
+        ;; solver. The type domain {:kind :type} is used for intersection
+        ;; algebra, but nodes should hold ranges for numeric types.
+        ensure-numeric-range
+        (fn [d] (if (and numeric? (= :type (:kind d)))
+                  (dom/range-dom nil nil)
+                  d))]
+    (fn [env args]
+      (if (seq args)
+        ;; Unary: (string x) → constrain arg to type domain + link to it
+        (let [[arg] args
+              [env' path] (bind/ensure-node-abs env arg)
+              d (bind/domain-of (tree/root env') path)
+              narrowed (ensure-numeric-range (dom/intersect d type-dom))]
+          (if (dom/void? narrowed)
+            (throw (ex-info (str "Contradiction: no " label " values") {:arg arg}))
+            (let [env' (bind/set-domain (tree/root env') path narrowed)
+                  caller (or (tree/cd env' (tree/position env)) env')]
+              ;; Link caller to the constrained arg so (integer x) evaluates to x
+              (assoc caller :link path))))
+        ;; Nullary: (integer) → fresh variable with domain
+        (assoc env :domain (if numeric?
+                             (dom/range-dom nil nil)
+                             type-dom))))))
 
 (defn- type-domain-destruct
   "Build a :destruct fn for type domain primitives.
@@ -132,6 +145,51 @@
              (if (= 1 (count body))
                (bind/bind env' (first body))
                (reduce (fn [e expr] (bind/bind e expr)) env' body))))})
+
+      ;; ── fresh: introduce logic variables ─────────────────────
+      ;; (fresh [x y] body...)           → free variables, body as and
+      ;; (fresh [(integer x) y] body...) → typed + free, body as and
+      ;;
+      ;; Each declaration is either:
+      ;;   - bare symbol   → (free) domain
+      ;;   - (type sym)    → (type) domain (uses nullary constructor)
+      ;;
+      ;; Body expressions are implicit and (last is return value).
+      ;; Non-final body expressions are treated as constraints:
+      ;; their tree mutations (domain narrows) are kept, but any
+      ;; :link they set on the workspace is cleared so subsequent
+      ;; expressions start from the same position.
+      (defprim 'fresh
+        {:bind
+         (fn [env [decls & body]]
+           (let [;; Create nodes: typed declarations use the type's nullary
+                 ;; form directly (e.g. (integer) → range(nil,nil));
+                 ;; bare symbols use (free).
+                 env' (reduce
+                       (fn [e decl]
+                         (cond
+                           (symbol? decl)
+                           (bind/bind e decl '(free))
+
+                           (seq? decl)
+                           (let [[type-name sym] decl]
+                             (bind/bind e sym (list type-name)))
+
+                           :else
+                           (throw (ex-info "Invalid fresh declaration"
+                                           {:decl decl}))))
+                       env decls)
+                 my-pos (tree/position env')
+                 ;; Non-final body: bind as constraints, restore position
+                 env' (reduce (fn [e expr]
+                                (let [result (bind/bind e expr)]
+                                  (-> (tree/cd (tree/root result) my-pos)
+                                      (dissoc :link))))
+                              env' (butlast body))]
+             ;; Final expression: bind as return value
+             (if (seq body)
+               (bind/bind env' (last body))
+               env')))})
 
       ;; ── and: all constraints must hold, last is return ──────
       (defprim 'and
@@ -560,6 +618,10 @@
       ;;   Unary:   (string x) → constrains x to string-dom
       ;; This unifies type domains with type predicates — no need for
       ;; separate string?/number?/keyword? primitives.
+      ;;
+      ;; In let-binding position, bare type names create fresh variables:
+      ;;   (let [x integer] ...) → x is a fresh integer variable
+      ;;   (let [s string] ...)  → s is a fresh string variable
       (defprims (for [[sym type-dom label] [['string  dom/string-dom  "string"]
                                              ['integer dom/integer-dom "integer"]
                                              ['number  dom/number-dom  "number"]
@@ -568,6 +630,14 @@
                   [sym {:bind (type-domain-bind type-dom label)
                         :type-domain type-dom
                         :destruct (type-domain-destruct type-dom label)}]))
+
+      ;; ── free: unconstrained variable ────────────────────────
+      ;; (let [x free] ...) creates a variable with no type constraint.
+      ;; Useful when the type will be narrowed later by constraints.
+      ;; In expression context: (free) sets own domain to any.
+      (defprim 'free
+        {:type-domain dom/any
+         :bind (fn [env _args] (assoc env :domain dom/any))})
 
       ;; ── Type constructors: vector-of, tuple, map-of ────────
       ;; These are bind-time unrolling constraints, consistent with
