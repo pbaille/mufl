@@ -1112,9 +1112,9 @@
          (let [raw-node (tree/find env [head])
                node (if (:link raw-node) (resolve raw-node) raw-node)]
            (cond
-             ;; Built-in form with :bind
-             (:bind node)
-             ((:bind node) env args)
+             ;; Built-in form with :construct
+             (:construct node)
+             ((:construct node) env args)
 
              ;; User-defined function with :mufl-fn
              (:mufl-fn node)
@@ -1126,7 +1126,7 @@
                  (call-fn env (:mufl-fn node) args head)))
 
              :else
-             (throw (ex-info (str "No :bind for form: " head) {:head head}))))
+             (throw (ex-info (str "No :construct for form: " head) {:head head}))))
 
          ;; Keyword as function: (:key m) → (get m :key)
          (keyword? head)

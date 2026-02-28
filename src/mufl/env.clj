@@ -1,8 +1,13 @@
 (ns mufl.env
-  "Base environment for mufl.
+  "Base environment for mufl — operator registration and built-in forms.
 
-   Populates the tree with built-in forms:
-   one-of, let, and, =, !=, <, >, <=, >=, +, -, *, distinct"
+   Operators are registered via `defop` with explicit capabilities:
+   - :construct  — expression-position (forward bind)
+   - :destruct   — pattern-position (backward destructuring)
+   - :type-domain — type identity domain
+   - :show       — tree→code serialization (optional)
+
+   Built-in: one-of, let, and, =, !=, <, >, <=, >=, +, -, *, distinct, etc."
   (:require [mufl.tree :as tree]
             [mufl.domain :as dom]
             [mufl.bind :as bind]))
@@ -11,11 +16,28 @@
 ;; Base environment construction
 ;; ════════════════════════════════════════════════════════════════
 
-(defn defprim
-  "Add a primitive form to the environment tree."
+(defn defop
+  "Register an operator in the environment tree.
+
+   Operators declare their capabilities via keyword fields:
+   - :construct  — expression-position evaluation (forward direction)
+   - :destruct   — pattern-position evaluation (backward direction)
+   - :type-domain — the type domain this operator represents
+   - :show       — (optional) tree→code serialization for show.clj
+   - :type-constructor — flag for composite type constructors (vector-of, tuple, map-of)
+
+   All operators get :primitive true automatically."
   [env name fields]
   (-> (tree/ensure-path env [name])
       (tree/put [name] (assoc fields :primitive true))))
+
+(defn defops
+  "Register multiple operators. specs is a seq of [name fields-map] pairs."
+  [env specs]
+  (reduce (fn [e [name fields]]
+            (-> (tree/ensure-path e [name])
+                (tree/put [name] (assoc fields :primitive true))))
+          env specs))
 
 (defn- apply-composite-and-propagate
   "Apply a composite domain to a target node, propagate watchers, and
@@ -42,14 +64,8 @@
         (or (tree/cd env' my-pos)
             (throw (ex-info (str error-label ": lost position") {:pos my-pos})))))))
 
-(defn defprims
-  "Register multiple primitives. specs is a seq of [name fields] pairs."
-  [env specs]
-  (reduce (fn [e [name fields]] (defprim e name fields))
-          env specs))
-
 (defn- filter-pred-bind
-  "Build a :bind fn for a domain-filter predicate (even?, odd?, pos?, neg?, zero?)."
+  "Build a :construct fn for a domain-filter predicate (even?, odd?, pos?, neg?, zero?)."
   [pred-fn label]
   (fn [env [arg]]
     (let [[env' path] (bind/ensure-node-abs env arg)
@@ -61,7 +77,7 @@
           (or (tree/cd env' (tree/position env)) env'))))))
 
 (defn- type-domain-bind
-  "Build a :bind fn for a type domain primitive (string, number, etc.).
+  "Build a :construct fn for a type domain primitive (string, number, etc.).
    Expression-position only:
    - Nullary: (integer) → create fresh variable with appropriate domain.
      For numeric types (:integer, :number), uses an unbounded range
@@ -139,16 +155,16 @@
   (-> {}
 
       ;; ── one-of: create a finite domain ──────────────────────
-      (defprim 'one-of
-        {:bind
+      (defop 'one-of
+        {:construct
          (fn [env args]
            (assoc env :domain (dom/finite (set args))))})
 
       ;; ── let: sequential bindings with body ──────────────────
       ;; Supports symbol bindings (let [x 1] ...) and destructuring
       ;; patterns: {:x a :y b} for maps, [a b c] for vectors.
-      (defprim 'let
-        {:bind
+      (defop 'let
+        {:construct
          (fn [env [bindings-vec & body]]
            (let [pairs (partition 2 bindings-vec)
                  env' (reduce (fn [e [pattern expr]]
@@ -184,8 +200,8 @@
       ;; their tree mutations (domain narrows) are kept, but any
       ;; :link they set on the workspace is cleared so subsequent
       ;; expressions start from the same position.
-      (defprim 'fresh
-        {:bind
+      (defop 'fresh
+        {:construct
          (fn [env [decls & body]]
            (let [;; Create nodes: typed declarations use the type's nullary
                  ;; form directly (e.g. (integer) → range(nil,nil));
@@ -217,8 +233,8 @@
                env')))})
 
       ;; ── and: all constraints must hold, last is return ──────
-      (defprim 'and
-        {:bind
+      (defop 'and
+        {:construct
          (fn [env args]
            (reduce (fn [e arg]
                      (let [result (bind/bind e arg)]
@@ -229,26 +245,26 @@
 
       ;; ── Relational constraints ──────────────────────────────
 
-      (defprims (for [[sym op] [['< :<] ['> :>] ['<= :<=] ['>= :>=] ['= :=] ['!= :!=]]]
-                  [sym {:bind (fn [env args] (bind/bind-relational env op args))}]))
+      (defops (for [[sym op] [['< :<] ['> :>] ['<= :<=] ['>= :>=] ['= :=] ['!= :!=]]]
+                  [sym {:construct (fn [env args] (bind/bind-relational env op args))}]))
 
       ;; ── Arithmetic ──────────────────────────────────────────
 
-      (defprim '+
-        {:bind (fn [env args]
+      (defop '+
+        {:construct (fn [env args]
                  (bind/bind-arithmetic env :+ args))})
 
-      (defprim '-
-        {:bind (fn [env args]
+      (defop '-
+        {:construct (fn [env args]
                  (bind/bind-arithmetic env :- args))})
 
-      (defprim '*
-        {:bind (fn [env args]
+      (defop '*
+        {:construct (fn [env args]
                  (bind/bind-arithmetic env :* args))})
 
       ;; ── distinct (all-different) ────────────────────────────
-      (defprim 'distinct
-        {:bind
+      (defop 'distinct
+        {:construct
          (fn [env [vec-expr]]
            ;; vec-expr should be a vector literal of symbols
            (let [my-pos (tree/position env)
@@ -267,23 +283,23 @@
 
       ;; ── mod / quot ──────────────────────────────────────────
 
-      (defprim 'mod
-        {:bind (fn [env args]
+      (defop 'mod
+        {:construct (fn [env args]
                  (bind/bind-arithmetic env :mod args))})
 
-      (defprim 'quot
-        {:bind (fn [env args]
+      (defop 'quot
+        {:construct (fn [env args]
                  (bind/bind-arithmetic env :quot args))})
 
       ;; ── between: integer range domain ──────────────────────
-      (defprim 'between
-        {:bind
+      (defop 'between
+        {:construct
          (fn [env [lo hi]]
            (assoc env :domain (dom/int-range lo hi)))})
 
       ;; ── do: sequence of expressions, return last ────────────
-      (defprim 'do
-        {:bind
+      (defop 'do
+        {:construct
          (fn [env args]
            (reduce (fn [e arg] (bind/bind e arg))
                    env args))})
@@ -315,7 +331,7 @@
       ;; Future: `(defdomain Shape (or Circle Rect))` is NOT YET supported.
       ;; Domain-level disjunction (sum types) would need to be added to domain.clj
       ;; as a new :union domain kind with proper intersection/narrowing algebra.
-      (defprim 'or
+      (defop 'or
         {:destruct
          (fn [env args seed-sym seed-domain]
            ;; Try each pattern in order, take the first that succeeds.
@@ -328,7 +344,7 @@
                                     (catch Exception _ nil))]
                  result
                  (recur rest-pats)))))
-         :bind
+         :construct
          (fn [env args]
            ;; Expression context: domain union.
            ;; Pattern-position destructuring is handled by :destruct above.
@@ -372,8 +388,8 @@
 
 ;; ── not: constraint negation ────────────────────────────
       ;; (not (= x y)) → (!= x y), etc.
-      (defprim 'not
-        {:bind
+      (defop 'not
+        {:construct
          (fn [env [inner]]
            (if-not (seq? inner)
              (throw (ex-info (str "Cannot negate non-list expression: " (pr-str inner))
@@ -394,8 +410,8 @@
       ;; (one branch contradicts). This enables recursion with ground args.
       ;; Falls back to fork storage for solve-time enumeration when both
       ;; branches are satisfiable (non-ground case).
-      (defprim 'if
-        {:bind
+      (defop 'if
+        {:construct
          (fn [env [test then else]]
            ;; If test is a boolean literal, resolve at bind time
            (cond
@@ -427,16 +443,16 @@
                                  {:test test}))))))})
 
       ;; ── when: like if but no else branch ────────────────────
-      (defprim 'when
-        {:bind
+      (defop 'when
+        {:construct
          (fn [env [test & body]]
            (bind/bind env (list 'if test (cons 'do body) nil)))})
 
       ;; ── cond: chained conditionals ──────────────────────────
       ;; Like if, tries eager resolution. If exactly one branch is satisfiable
       ;; and all others contradict, takes it eagerly. Otherwise defers to solve.
-      (defprim 'cond
-        {:bind
+      (defop 'cond
+        {:construct
          (fn [env args]
            (let [branches (vec (partition 2 args))
                  ;; Try each branch, collecting [test-env body-expr] for viable ones
@@ -467,12 +483,12 @@
       ;; ── Filter predicates: even, odd, pos, neg, zero ───────
       ;; Each narrows a domain by filtering with a Clojure predicate.
       ;; No ? suffix — these are constraints, not boolean predicates.
-      (defprims (for [[sym pred-fn label] [['even even? "even"]
+      (defops (for [[sym pred-fn label] [['even even? "even"]
                                             ['odd odd? "odd"]
                                             ['pos pos? "positive"]
                                             ['neg neg? "negative"]
                                             ['zero zero? "zero"]]]
-                  [sym {:bind (filter-pred-bind pred-fn label)}]))
+                  [sym {:construct (filter-pred-bind pred-fn label)}]))
 
       ;; ── fn: multi-branch function ─────────────────────────────
       ;; Single branch:  (fn [params] body-expr)
@@ -480,8 +496,8 @@
       ;; With default:   (fn [p1] expr1 [p2] expr2 ... default-expr)
       ;; Params support full pattern language: symbols, type wrappers,
       ;; literals, maps, vectors.
-      (defprim 'fn
-        {:bind
+      (defop 'fn
+        {:construct
          (fn [env forms]
            ;; Parse forms into branches: each vector starts a new branch,
            ;; followed by exactly one body expression. Optional trailing
@@ -516,8 +532,8 @@
       ;; ── abs: absolute value ─────────────────────────────────
       ;; Implemented as a constraint: |a| = c
       ;; Narrowing: c must be in {|a| for a in A}; a must be in {a : |a| in C}
-      (defprim 'abs
-        {:bind
+      (defop 'abs
+        {:construct
          (fn [env [arg]]
            (let [my-pos (tree/position env)
                  [env' a-path] (bind/ensure-node-abs env arg)
@@ -530,8 +546,8 @@
              (bind/add-constraint-and-return env' :abs [a-path result-path] my-pos)))})
 
       ;; ── min / max on two values ─────────────────────────────
-      (defprim 'min
-        {:bind
+      (defop 'min
+        {:construct
          (fn [env [a-expr b-expr]]
            (let [[env' a-path] (bind/ensure-node-abs env a-expr)
                  [env'' b-path] (bind/ensure-node-abs env' b-expr)
@@ -545,8 +561,8 @@
                         :domain result-dom))
                (assoc env :domain dom/any))))})
 
-      (defprim 'max
-        {:bind
+      (defop 'max
+        {:construct
          (fn [env [a-expr b-expr]]
            (let [[env' a-path] (bind/ensure-node-abs env a-expr)
                  [env'' b-path] (bind/ensure-node-abs env' b-expr)
@@ -563,8 +579,8 @@
       ;; ── get: map key access ─────────────────────────────────
       ;; (get m :key) navigates to the :key child of map node m.
       ;; Creates a link so constraints propagate back to the child.
-      (defprim 'get
-        {:bind
+      (defop 'get
+        {:construct
          (fn [env [coll-expr key-expr]]
            (let [;; Resolve the collection to its node
                  coll-node (cond
@@ -602,8 +618,8 @@
       ;; ── nth: vector index access ────────────────────────────
       ;; (nth v i) navigates to the ith child of vector node v.
       ;; Creates a link so constraints propagate back to the child.
-      (defprim 'nth
-        {:bind
+      (defop 'nth
+        {:construct
          (fn [env [vec-expr idx-expr]]
            (let [;; Resolve the vector to its node
                  vec-node (cond
@@ -649,12 +665,12 @@
       ;; In let-binding position, bare type names create fresh variables:
       ;;   (let [x integer] ...) → x is a fresh integer variable
       ;;   (let [s string] ...)  → s is a fresh string variable
-      (defprims (for [[sym type-dom label] [['string  dom/string-dom  "string"]
+      (defops (for [[sym type-dom label] [['string  dom/string-dom  "string"]
                                              ['integer dom/integer-dom "integer"]
                                              ['number  dom/number-dom  "number"]
                                              ['keyword dom/keyword-dom "keyword"]
                                              ['boolean dom/boolean-dom "boolean"]]]
-                  [sym {:bind (type-domain-bind type-dom label)
+                  [sym {:construct (type-domain-bind type-dom label)
                         :type-domain type-dom
                         :destruct (type-domain-destruct type-dom label)}]))
 
@@ -662,9 +678,9 @@
       ;; (let [x free] ...) creates a variable with no type constraint.
       ;; Useful when the type will be narrowed later by constraints.
       ;; In expression context: (free) sets own domain to any.
-      (defprim 'free
+      (defop 'free
         {:type-domain dom/any
-         :bind (fn [env _args] (assoc env :domain dom/any))})
+         :construct (fn [env _args] (assoc env :domain dom/any))})
 
       ;; ── Type constructors: vector-of, tuple, map-of ────────
       ;; These are bind-time unrolling constraints, consistent with
@@ -675,9 +691,9 @@
       ;; (vector-of integer v) — every element of v must be an integer.
       ;; In defdomain: (defdomain IntVec (vector-of integer))
       ;; Walks vector children, intersecting each with the type domain.
-      (defprim 'vector-of
+      (defop 'vector-of
         {:type-constructor true
-         :bind
+         :construct
          (fn [env args]
            (let [;; Determine arity:
                  ;; Nullary: invalid
@@ -750,9 +766,9 @@
       ;; (tuple [integer string boolean] v) — v must be a 3-element vector
       ;; where element 0 is integer, element 1 is string, element 2 is boolean.
       ;; In defdomain: (defdomain Point (tuple [number number]))
-      (defprim 'tuple
+      (defop 'tuple
         {:type-constructor true
-         :bind
+         :construct
          (fn [env args]
            (let [_ (when (< (count args) 1)
                      (throw (ex-info "tuple requires at least 1 argument" {:args args})))
@@ -827,9 +843,9 @@
       ;; (map-of keyword integer m) — all keys must be keywords,
       ;; all values must be integers.
       ;; In defdomain: (defdomain Scores (map-of keyword integer))
-      (defprim 'map-of
+      (defop 'map-of
         {:type-constructor true
-         :bind
+         :construct
          (fn [env args]
            (let [_ (when (< (count args) 2)
                      (throw (ex-info "map-of requires at least 2 arguments: (map-of key-type val-type [map])"
@@ -911,16 +927,16 @@
       ;; Template is any domain schema expression: a type domain, a map/vector
       ;; of domains, a composite domain, or a named def-bound schema.
       ;; Reuses resolve-domain-schema + apply-domain-constraint.
-      (defprim 'narrow
-        {:bind
+      (defop 'narrow
+        {:construct
          (fn [env [target-expr template-expr]]
            (let [schema (bind/resolve-domain-schema env template-expr)]
              (bind/apply-domain-constraint env schema [target-expr])))})
 
       ;; ── isa: shorthand alias for narrow ─────────────────────
       ;; (isa x integer) ≡ (narrow x integer)
-      (defprim 'isa
-        {:bind
+      (defop 'isa
+        {:construct
          (fn [env [target-expr template-expr]]
            (let [schema (bind/resolve-domain-schema env template-expr)]
              (bind/apply-domain-constraint env schema [target-expr])))})
@@ -932,8 +948,8 @@
       ;;
       ;; `def` just names a value. No domain interpretation, no callable behavior.
       ;; Use `(narrow target Schema)` to apply structural constraints.
-      (defprim 'def
-        {:bind
+      (defop 'def
+        {:construct
          (fn [env [def-name value-expr]]
            (let [my-pos (tree/position env)
                  env' (-> (tree/root env)
@@ -950,8 +966,8 @@
       ;;
       ;; Since fn is bidirectional (call in expression position,
       ;; destructure in pattern position), defn inherits both.
-      (defprim 'defn
-        {:bind
+      (defop 'defn
+        {:construct
          (fn [env [cname params & body]]
            (bind/bind env (list 'def cname (list* 'fn params body))))})
 
@@ -960,8 +976,8 @@
 
       ;; ── count: collection length ────────────────────────────
       ;; (count v) returns the number of elements in a vector or map.
-      (defprim 'count
-        {:bind
+      (defop 'count
+        {:construct
          (fn [env [coll-expr]]
            (let [coll-node (cond
                              (symbol? coll-expr)
@@ -995,8 +1011,8 @@
       ;; (map f coll) — applies f to each element of the vector,
       ;; returns a new vector with the results.
       ;; Unrolls at bind time since collection size is known.
-      (defprim 'map
-        {:bind
+      (defop 'map
+        {:construct
          (fn [env [f-expr coll-expr]]
            (let [;; Bind the function to a temp name so we can refer to it by symbol
                  f-sym (gensym "mapfn__")
@@ -1033,8 +1049,8 @@
       ;; At bind time, tries the predicate: if contradiction → exclude,
       ;; if succeeds → include. Conservative: includes on uncertainty.
       ;; Returns a new vector of surviving elements.
-      (defprim 'filter
-        {:bind
+      (defop 'filter
+        {:construct
          (fn [env [pred-expr coll-expr]]
            (let [;; Bind the predicate to a temp name
                  pred-sym (gensym "filtfn__")
@@ -1076,8 +1092,8 @@
       ;; ── reduce: fold over collection ────────────────────────
       ;; (reduce f init coll) — iteratively applies (f acc elem).
       ;; Unrolls at bind time: (f (f (f init e0) e1) e2)
-      (defprim 'reduce
-        {:bind
+      (defop 'reduce
+        {:construct
          (fn [env [f-expr init-expr coll-expr]]
            (let [;; Bind the function to a temp name
                  f-sym (gensym "redfn__")
@@ -1119,7 +1135,7 @@
 
       ;; ── ks: keyword-symbol map destructuring ────────────────
       ;; (ks a b c) against value → bind a to (:a value), b to (:b value), etc.
-      (defprim 'ks
+      (defop 'ks
         {:destruct
          (fn [env args seed-sym seed-domain]
            ;; (ks a b c) → same as {:a a :b b :c c}
@@ -1138,7 +1154,7 @@
 
       ;; ── as: bind whole + inner destructure ──────────────────
       ;; (as m (ks x y)) → bind m to value, then destructure with inner pattern
-      (defprim 'as
+      (defop 'as
         {:destruct
          (fn [env [name-sym inner-pattern] seed-sym seed-domain]
            ;; (as m (ks x y)) → bind m to seed with full domain, then recurse
@@ -1156,8 +1172,8 @@
       ;; (drop n v) → new vector containing elements from index n to end.
       ;; Generalized rest: (drop 1 v) gives elements from index 1 onward.
       ;; n must be a literal integer. Builds [(nth v n) (nth v n+1) ...].
-      (defprim 'drop
-        {:bind
+      (defop 'drop
+        {:construct
          (fn [env [n-expr vec-expr]]
            (let [_ (when-not (integer? n-expr)
                      (throw (ex-info "drop: first arg must be a literal integer"
@@ -1195,8 +1211,8 @@
       ;; ── dissoc: remove keys from a map ─────────────────────
       ;; (dissoc m :k1 :k2 ...) → new map node without the specified keys.
       ;; Builds a new map by linking to remaining children of the original.
-      (defprim 'dissoc
-        {:bind
+      (defop 'dissoc
+        {:construct
          (fn [env [map-expr & key-exprs]]
            (let [;; Resolve the map
                  map-node (cond

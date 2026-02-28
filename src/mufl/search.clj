@@ -352,7 +352,7 @@
          (not (:primitive child))
          (not (:mufl-fn child))
          (not (:defn-constructor child))
-         (not (:bind child))
+         (not (:construct child))
          (not (:def-binding child))
          ;; Must hold a value: domain, link, vector, or map
          (or (:domain child)
