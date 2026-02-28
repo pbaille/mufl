@@ -20,9 +20,24 @@
             [mufl.pattern :as pattern]))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Re-exports from mufl.narrow
+;; Re-exports — unified facade
 ;; ════════════════════════════════════════════════════════════════
+;;
+;; bind serves as the primary API surface for callers (env, core,
+;; search, show). Rather than requiring narrow, schema, and pattern
+;; individually, callers use bind/ for everything. This keeps import
+;; lists short and decouples callers from the internal module split.
+;;
+;; High-traffic (10+ call sites): resolve, domain-of
+;; Medium (2-4 call sites):       set-domain, bind-pattern, resolve-domain-schema,
+;;                                apply-domain-constraint, propagate-watchers
+;; Low (0-1 call sites):          resolve-at, apply-composite-constraint,
+;;                                bind-pattern-map, domain-node, propagate
+;;
+;; The low-usage re-exports are kept for API consistency — callers
+;; shouldn't need to know which sub-namespace owns a function.
 
+;; From mufl.narrow
 (def resolve narrow/resolve)
 (def resolve-at narrow/resolve-at)
 (def domain-of narrow/domain-of)
@@ -31,17 +46,11 @@
 (def apply-composite-constraint narrow/apply-composite-constraint)
 (def propagate-watchers narrow/propagate-watchers)
 
-;; ════════════════════════════════════════════════════════════════
-;; Re-exports from mufl.schema
-;; ════════════════════════════════════════════════════════════════
-
+;; From mufl.schema
 (def resolve-domain-schema schema/resolve-domain-schema)
 (def apply-domain-constraint schema/apply-domain-constraint)
 
-;; ════════════════════════════════════════════════════════════════
-;; Re-exports from mufl.pattern
-;; ════════════════════════════════════════════════════════════════
-
+;; From mufl.pattern
 (def bind-pattern pattern/bind-pattern)
 (def bind-pattern-map pattern/bind-pattern-map)
 (def domain-node pattern/domain-node)

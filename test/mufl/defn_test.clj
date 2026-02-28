@@ -1,4 +1,4 @@
-(ns mufl.defc-test
+(ns mufl.defn-test
   (:require [clojure.test :refer [deftest testing is]]
             [mufl.core :as m]))
 

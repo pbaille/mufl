@@ -326,7 +326,7 @@
                         (let [unioned (->> branch-envs
                                            (map (fn [e]
                                                   (let [node (tree/at (tree/root e) vpath)]
-                                                    (clojure.core/or (:domain node) dom/any))))
+                                                    (or (:domain node) dom/any))))
                                            (reduce dom/unite dom/void))
                               current (bind/domain-of env-root vpath)
                               narrowed (dom/intersect current unioned)]
@@ -335,7 +335,7 @@
                             (bind/set-domain env-root vpath narrowed))))
                       env-root
                       all-paths)]
-                 (clojure.core/or (tree/cd env-root pos) env-root)))))})
+                 (or (tree/cd env-root pos) env-root)))))})
 
 ;; ── not: constraint negation ────────────────────────────
       ;; (not (= x y)) → (!= x y), etc.
@@ -507,7 +507,7 @@
              (if (and (dom/finite? a-dom) (dom/finite? b-dom))
                (let [result-dom (dom/finite (set (for [a (dom/members a-dom)
                                                        b (dom/members b-dom)]
-                                                   (clojure.core/min a b))))]
+                                                   (min a b))))]
                  (assoc (or (tree/cd (tree/root env'') (tree/position env)) env'')
                         :domain result-dom))
                (assoc env :domain dom/any))))})
@@ -522,7 +522,7 @@
              (if (and (dom/finite? a-dom) (dom/finite? b-dom))
                (let [result-dom (dom/finite (set (for [a (dom/members a-dom)
                                                        b (dom/members b-dom)]
-                                                   (clojure.core/max a b))))]
+                                                   (max a b))))]
                  (assoc (or (tree/cd (tree/root env'') (tree/position env)) env'')
                         :domain result-dom))
                (assoc env :domain dom/any))))})
@@ -709,11 +709,10 @@
            (let [[_ coll-node] (bind/resolve-to-node env coll-expr "count")
                  n (cond
                      (:vector coll-node)
-                     (clojure.core/count (filter #(integer? (::tree/name %))
-                                                 (tree/children coll-node)))
+                     (count (tree/int-children coll-node))
 
                      (:map coll-node)
-                     (clojure.core/count (tree/children coll-node))
+                     (count (tree/children coll-node))
 
                      :else
                      (throw (ex-info (str "count: not a collection: " coll-expr)
@@ -734,14 +733,12 @@
                  [_ coll-node] (bind/resolve-collection env coll-expr :vector "map")]
              ;; Build a vector expression: [(f e0) (f e1) ...]
              ;; where each ei is (nth coll-expr i)
-             (let [children (sort-by ::tree/name
-                                     (clojure.core/filter #(integer? (::tree/name %))
-                                                          (tree/children coll-node)))
-                   n (clojure.core/count children)
+             (let [children (tree/int-children coll-node)
+                   n (count children)
                    ;; Build the result as a vector of function applications
                    result-exprs (mapv (fn [i]
                                         (list f-sym (list 'nth coll-expr i)))
-                                      (clojure.core/range n))]
+                                      (range n))]
                (bind/bind env (vec result-exprs)))))})
 
       ;; ── filter: keep elements satisfying predicate ──────────
@@ -757,21 +754,19 @@
                  env (bind/bind env pred-sym pred-expr)
                  ;; Resolve the collection
                  [_ coll-node] (bind/resolve-collection env coll-expr :vector "filter")
-                 children (sort-by ::tree/name
-                                   (clojure.core/filter #(integer? (::tree/name %))
-                                                        (tree/children coll-node)))
-                 n (clojure.core/count children)]
+                 children (tree/int-children coll-node)
+                 n (count children)]
              ;; For each element, try applying the predicate.
              ;; Include if it doesn't contradict.
              (let [surviving-indices
-                   (vec (clojure.core/filter
+                   (vec (filter
                          (fn [i]
                            (try
                              (bind/bind env (list pred-sym (list 'nth coll-expr i)))
                              true ;; succeeded — include
                              (catch Exception _
                                false))) ;; contradicted — exclude
-                         (clojure.core/range n)))
+                         (range n)))
                    result-exprs (mapv (fn [i] (list 'nth coll-expr i))
                                       surviving-indices)]
                (bind/bind env (vec result-exprs)))))})
@@ -787,16 +782,14 @@
                  env (bind/bind env f-sym f-expr)
                  ;; Resolve the collection
                  [_ coll-node] (bind/resolve-collection env coll-expr :vector "reduce")
-                 children (sort-by ::tree/name
-                                   (clojure.core/filter #(integer? (::tree/name %))
-                                                        (tree/children coll-node)))
-                 n (clojure.core/count children)]
+                 children (tree/int-children coll-node)
+                 n (count children)]
              ;; Unroll: (f (f (f init e0) e1) e2)
-             (let [folded (clojure.core/reduce
+             (let [folded (reduce
                            (fn [acc-expr i]
                              (list f-sym acc-expr (list 'nth coll-expr i)))
                            init-expr
-                           (clojure.core/range n))]
+                           (range n))]
                (bind/bind env folded))))})
 
       ;; ════════════════════════════════════════════════════════
@@ -854,17 +847,14 @@
                                      {:n n-expr})))
                  ;; Resolve the vector
                  [_ vec-node] (bind/resolve-collection env vec-expr :vector "drop")
-                 ;; Get sorted integer children (indices)
-                 children (sort-by ::tree/name
-                                   (clojure.core/filter #(integer? (::tree/name %))
-                                                        (tree/children vec-node)))
-                 total (clojure.core/count children)]
+                 children (tree/int-children vec-node)
+                 total (count children)]
              (if (<= total n-expr)
                ;; Nothing left — return empty vector
                (assoc env :vector true)
                ;; Build rest vector: [(nth vec n) (nth vec n+1) ...]
                (let [rest-exprs (mapv (fn [i] (list 'nth vec-expr i))
-                                      (clojure.core/range n-expr total))]
+                                      (range n-expr total))]
                  (bind/bind env (vec rest-exprs))))))})
 
       ;; ── dissoc: remove keys from a map ─────────────────────
@@ -876,7 +866,7 @@
            (let [[_ map-node] (bind/resolve-collection env map-expr :map "dissoc")
                  remove-keys (set key-exprs)
                  ;; Get the remaining children (those not being removed)
-                 remaining-children (clojure.core/filter
+                 remaining-children (filter
                                      (fn [child]
                                        (not (contains? remove-keys (::tree/name child))))
                                      (tree/children map-node))]
