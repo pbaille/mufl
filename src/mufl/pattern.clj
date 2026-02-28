@@ -433,7 +433,8 @@
 
 (defn bind-pattern-operator
   "Dispatch an operator pattern like (ks a b), (as m pat), (point x y).
-   Checks for :destruct (built-in operators), then :mufl-fn (user functions).
+   Checks for :destruct (built-in operators), then :mufl-fn (user functions),
+   then domain values (callable domains as type guards).
    Returns [env' bound-syms]."
   [env [head & args] seed-sym seed-domain]
   (let [node (tree/find env [head])
@@ -448,6 +449,33 @@
       (:mufl-fn resolved)
       (fn-destruct env (:mufl-fn resolved) args seed-sym seed-domain)
 
+      ;; Domain value as type guard: (intvec x) ≡ (integer x) but for any domain
+      ;; Binds inner pattern to seed, then applies domain constraint structurally.
+      ;; Always use raw node (pre-resolve): resolve is lossy and collapses
+      ;; link+map (and-composition) into plain map nodes.
+      ;; resolve-schema-from-tree follows links internally, so pre-resolving is unnecessary.
       :else
-      (throw (ex-info (str "No :destruct or :mufl-fn for pattern head: " head)
-                      {:pattern (cons head args)})))))
+      (let [try-resolve @(requiring-resolve 'mufl.schema/try-resolve-schema-from-tree)
+            domain (try-resolve node)]
+        (if domain
+          (do
+            (when (not= 1 (count args))
+              (throw (ex-info (str "Domain pattern '" head "' takes exactly one argument")
+                              {:pattern (cons head args) :arg-count (count args)})))
+            (let [;; For simple scalar domains (non-composite, non-structural), use fast intersect path
+                  scalar? (not (#{:vector-of :tuple :map-of :map-fields :intersection} (:kind domain)))]
+              (if scalar?
+                ;; Scalar domain: intersect seed domain + recurse (like type-domain-destruct)
+                (let [narrowed (dom/intersect (or seed-domain dom/any) domain)]
+                  (if (dom/void? narrowed)
+                    (throw (ex-info (str "Domain guard contradiction in pattern: " head)
+                                    {:domain domain :seed-domain seed-domain}))
+                    (bind-pattern env (first args) seed-sym narrowed)))
+                ;; Composite/structural: bind inner pattern first, then apply constraint
+                (let [inner-pattern (first args)
+                      [env' bound-syms] (bind-pattern env inner-pattern seed-sym seed-domain)
+                      apply-constraint (fn [] @(requiring-resolve 'mufl.schema/apply-domain-constraint))
+                      env'' ((apply-constraint) env' domain [seed-sym])]
+                  [env'' bound-syms]))))
+          (throw (ex-info (str "Cannot use '" head "' as pattern: not a function, destructor, or domain")
+                          {:pattern (cons head args)})))))))

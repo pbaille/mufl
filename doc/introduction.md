@@ -617,11 +617,11 @@ Type constructors constrain entire collections at once. They walk the collection
 
 ### vector-of
 
-`(vector-of type vec)` constrains every element of a vector to match a type.
+`(vector-of type)` produces a composite domain where every element must match the type. Use with `narrow` to constrain a vector:
 
 ```clojure
 (query (let [v [(one-of 1 "a") (one-of 2 "b") (one-of 3 "c")]]
-         (vector-of integer v)
+         (narrow v (vector-of integer))
          v))
 ;=> [[1 2 3]]
 ```
@@ -631,7 +631,7 @@ Works with named domains too:
 ```clojure
 (query (def named {:name string})
        (let [people [{:name (one-of "Alice" 42)} {:name (one-of "Bob" 99)}]]
-         (vector-of named people)
+         (narrow people (vector-of named))
          people))
 ;=> [[{:name "Alice"} {:name "Bob"}]]
 ```
@@ -648,11 +648,11 @@ In `def` schemas:
 
 ### tuple
 
-`(tuple [type1 type2 ...] vec)` constrains a vector to an exact length with per-position types.
+`(tuple [type1 type2 ...])` produces a composite domain with per-position types. Use with `narrow`:
 
 ```clojure
 (query (let [v [(one-of 42 "x") (one-of "hello" 99) (one-of true 0)]]
-         (tuple [integer string boolean] v)
+         (narrow v (tuple [integer string boolean]))
          v))
 ;=> [[42 "hello" true]]
 ```
@@ -669,11 +669,11 @@ In `def` schemas:
 
 ### map-of
 
-`(map-of key-type val-type map)` constrains all keys and values in a map.
+`(map-of key-type val-type)` produces a composite domain constraining all keys and values. Use with `narrow`:
 
 ```clojure
 (query (let [m {:a (one-of 1 "x") :b (one-of 2 "y")}]
-         (map-of keyword integer m)
+         (narrow m (map-of keyword integer))
          m))
 ;=> [{:a 1 :b 2}]
 ```
@@ -700,6 +700,78 @@ Type constructors compose naturally. A vector of named domains, or a domain cont
          [(get s :name) (get s :scores)]))
 ;=> [["Alice" [90 80]]]
 ```
+
+## Callable domains
+
+Any bound domain value — type constructors, `def`-named schemas, scalar domains — can be **called as a function**. Calling a domain is equivalent to `narrow`: `(intvec v)` means `(narrow v intvec)`.
+
+### Expression position
+
+In expression position, calling a domain constrains the argument and returns the environment (like `narrow`):
+
+```clojure
+(query (let [intvec (vector-of integer)
+             v [(one-of 1 "a") (one-of 2 "b")]]
+         (intvec v) v))
+;=> [[1 2]]
+```
+
+Works with all domain kinds — type constructors, struct schemas, scalar domains:
+
+```clojure
+;; Struct domain
+(query (def person {:name string :age integer})
+       (let [p {:name (one-of "Alice" 42) :age (one-of 30 "old")}]
+         (person p) p))
+;=> [{:name "Alice" :age 30}]
+
+;; Tuple domain
+(query (let [pair (tuple [integer string])
+             v [(one-of 42 "x") (one-of "hello" 99)]]
+         (pair v) v))
+;=> [[42 "hello"]]
+
+;; map-of domain
+(query (let [scores (map-of keyword integer)
+             m {:a (one-of 1 "x") :b (one-of 2 "y")}]
+         (scores m) m))
+;=> [{:a 1 :b 2}]
+```
+
+### Pattern position
+
+Callable domains work in **pattern position** too — `(let [(intvec x) v] x)` destructures `v` and constrains it to match the domain:
+
+```clojure
+(query (let [intvec (vector-of integer)
+             v [(one-of 1 "a") (one-of 2 "b")]]
+         (let [(intvec x) v] x)))
+;=> [[1 2]]
+```
+
+This composes with all pattern features — inner destructuring, `as`, nested patterns:
+
+```clojure
+;; Inner destructuring: extract elements after domain constraint
+(query (let [intvec (vector-of integer)
+             v [(one-of 1 "a") (one-of 2 "b")]]
+         (let [(intvec [a b]) v] [a b])))
+;=> [[1 2]]
+
+;; Struct domain in pattern with map destructuring
+(query (def person {:name string :age integer})
+       (let [p {:name (one-of "Alice" 42) :age (one-of 30 "old")}]
+         (let [(person {:name n :age a}) p] [n a])))
+;=> [["Alice" 30]]
+
+;; Scalar domain as pattern guard
+(query (def small (between 1 10))
+       (let [v (one-of 5 20 "x")]
+         (let [(small x) v] x)))
+;=> [5]
+```
+
+Callable domains generalize the built-in type guard syntax. Where `(integer x)` filters to integers, `(my-domain x)` filters to any named domain — giving you the same concise pattern for user-defined types.
 
 ## Higher-order functions
 
@@ -905,6 +977,7 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `defn` | Sugar for `(def name (fn ...))` — names a function |
 | `def` | Named value binding — gives a name to any value |
 | `narrow` | Constrain a value against a domain — scalar, composite, or structural |
+| Callable domains | `(my-domain x)` ≡ `(narrow x my-domain)` — works in both expression and pattern position |
 | `vector-of` | Constrain all vector elements to a type |
 | `tuple` | Per-position type constraints on a vector |
 | `map-of` | Constrain all map keys and values |

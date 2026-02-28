@@ -29,6 +29,7 @@
 (def set-domain narrow/set-domain)
 (def propagate narrow/propagate)
 (def apply-composite-constraint narrow/apply-composite-constraint)
+(def propagate-watchers narrow/propagate-watchers)
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Re-exports from mufl.schema
@@ -203,6 +204,44 @@
         env'' (assoc env'' :domain result-dom)
         result-path (tree/position env'')]
     (add-constraint-and-return env'' op [a-path b-path result-path] my-pos)))
+
+;; ════════════════════════════════════════════════════════════════
+;; Resolution helpers — resolve expressions to tree nodes
+;; ════════════════════════════════════════════════════════════════
+
+(defn resolve-to-node
+  "Resolve an expression to its tree node.
+   Returns [env' resolved-node] where env' may differ from env
+   when expr is a list (creates a temp node via ensure-node-abs).
+   For symbol expressions, env' = env.
+   Throws if the expression cannot be resolved."
+  [env expr op-name]
+  (cond
+    (symbol? expr)
+    (if-let [found (tree/find env [expr])]
+      [env (narrow/resolve found)]
+      (throw (ex-info (str op-name ": cannot resolve: " expr)
+                      {:expr expr})))
+    (seq? expr)
+    (let [[env' path] (ensure-node-abs env expr)]
+      [env' (narrow/resolve-at (tree/root env') path)])
+    :else
+    (throw (ex-info (str op-name ": argument must be a symbol or expression")
+                    {:expr expr}))))
+
+(defn resolve-collection
+  "Resolve an expression to a collection node and validate its kind.
+   expected-kind is :vector or :map.
+   Returns [env' resolved-node]. Throws on resolution failure or kind mismatch."
+  [env expr expected-kind op-name]
+  (let [[env' node] (resolve-to-node env expr op-name)]
+    (when-not node
+      (throw (ex-info (str op-name ": cannot resolve: " expr)
+                      {:expr expr})))
+    (when-not (get node expected-kind)
+      (throw (ex-info (str op-name ": not a " (name expected-kind) " node: " expr)
+                      {:expr expr})))
+    [env' node]))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Multi-branch fn call support
@@ -382,8 +421,16 @@
                (binding [*call-depth* (inc *call-depth*)]
                  (call-fn env (:mufl-fn node) args head)))
 
+             ;; Domain value used as constraint: (intvec x) ≡ (narrow x intvec)
+             ;; Works for type constructors (vector-of, tuple, map-of), named defs, etc.
+             ;; Always use raw-node (pre-resolve): resolve is lossy and collapses
+             ;; link+map (and-composition) into plain map nodes.
+             ;; resolve-schema-from-tree follows links internally, so pre-resolving is unnecessary.
              :else
-             (throw (ex-info (str "No :construct for form: " head) {:head head}))))
+             (if-let [schema (schema/try-resolve-schema-from-tree raw-node)]
+               (schema/apply-domain-constraint env schema args)
+               (throw (ex-info (str "Cannot call '" head "': not a function, constructor, or domain")
+                               {:head head})))))
 
          ;; Keyword as function: (:key m) → (get m :key)
          (keyword? head)

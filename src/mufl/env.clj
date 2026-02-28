@@ -9,7 +9,8 @@
    Built-in: one-of, let, and, =, !=, <, >, <=, >=, +, -, *, distinct, etc."
   (:require [mufl.tree :as tree]
             [mufl.domain :as dom]
-            [mufl.bind :as bind]))
+            [mufl.bind :as bind]
+            [mufl.schema :as schema]))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Base environment construction
@@ -34,30 +35,6 @@
   (reduce (fn [e [name fields]] (defop e name fields))
           env specs))
 
-(defn- apply-composite-and-propagate
-  "Apply a composite domain to a target node, propagate watchers, and
-   navigate back to my-pos. Used by vector-of, tuple, and map-of fast paths.
-   Returns the env at my-pos, or throws on contradiction."
-  [env target-path composite-dom my-pos error-label]
-  (let [result (bind/apply-composite-constraint (tree/root env) target-path composite-dom)]
-    (if-not result
-      (throw (ex-info (str error-label ": contradiction") {}))
-      (let [env' (:env result)
-            changed (:changed result)
-            env' (if (seq changed)
-                   (let [watchers (->> changed
-                                       (mapcat (fn [p]
-                                                 (let [node (tree/at env' p)]
-                                                   (:watched-by node))))
-                                       (distinct)
-                                       vec)]
-                     (if (seq watchers)
-                       (or (bind/propagate env' watchers)
-                           (throw (ex-info (str "Contradiction during " error-label " propagation") {})))
-                       env'))
-                   env')]
-        (or (tree/cd env' my-pos)
-            (throw (ex-info (str error-label ": lost position") {:pos my-pos})))))))
 
 (defn- filter-pred-bind
   "Build a :construct fn for a domain-filter predicate (even?, odd?, pos?, neg?, zero?)."
@@ -119,30 +96,9 @@
                         {:type-dom type-dom :seed-domain seed-domain}))
         (bind/bind-pattern env inner-pattern seed-sym narrowed)))))
 
-(defn- resolve-type-expr
-  "Resolve a type expression to a domain value.
-   Handles:
-   - Symbols: look up :type-domain, then bound domain
-   - List expressions: bind them and extract :type-domain from the result
-   Returns the domain or nil if unresolvable as a domain."
-  [env expr]
-  (cond
-    (symbol? expr)
-    (when-let [found (tree/find env [expr])]
-      (let [resolved (bind/resolve found)]
-        (or (:type-domain resolved)
-            ;; For bound values with a domain (e.g., (def SmallInt (between 1 10)))
-            (:domain resolved))))
-
-    (seq? expr)
-    ;; Bind the expression to get its :type-domain
-    (let [tmp (gensym "typeres__")
-          env' (bind/bind env tmp expr)
-          node (when-let [found (tree/find env' [tmp])]
-                 (bind/resolve found))]
-      (:type-domain node))
-
-    :else nil))
+;; Type resolution for constructors uses schema/resolve-domain-schema directly.
+;; This is the single canonical path: source expression → schema map.
+;; No separate resolve-type-expr / resolve-type-schema needed.
 
 (defn base-env
   "Build the base environment with all built-in forms."
@@ -577,25 +533,7 @@
       (defop 'get
         {:construct
          (fn [env [coll-expr key-expr]]
-           (let [;; Resolve the collection to its node
-                 coll-node (cond
-                             (symbol? coll-expr)
-                             (when-let [found (tree/find env [coll-expr])]
-                               (bind/resolve found))
-
-                             (seq? coll-expr)
-                             (let [[env' path] (bind/ensure-node-abs env coll-expr)]
-                               (bind/resolve-at (tree/root env') path))
-
-                             :else
-                             (throw (ex-info "get: first arg must be a symbol or expression"
-                                             {:coll coll-expr})))
-                 _ (when-not coll-node
-                     (throw (ex-info (str "get: cannot resolve collection: " coll-expr)
-                                     {:coll coll-expr})))
-                 _ (when-not (:map coll-node)
-                     (throw (ex-info (str "get: not a map node: " coll-expr)
-                                     {:coll coll-expr})))
+           (let [[_ coll-node] (bind/resolve-collection env coll-expr :map "get")
                  _ (when-not (keyword? key-expr)
                      (throw (ex-info "get: key must be a literal keyword"
                                      {:key key-expr})))
@@ -616,25 +554,7 @@
       (defop 'nth
         {:construct
          (fn [env [vec-expr idx-expr]]
-           (let [;; Resolve the vector to its node
-                 vec-node (cond
-                            (symbol? vec-expr)
-                            (when-let [found (tree/find env [vec-expr])]
-                              (bind/resolve found))
-
-                            (seq? vec-expr)
-                            (let [[env' path] (bind/ensure-node-abs env vec-expr)]
-                              (bind/resolve-at (tree/root env') path))
-
-                            :else
-                            (throw (ex-info "nth: first arg must be a symbol or expression"
-                                            {:vec vec-expr})))
-                 _ (when-not vec-node
-                     (throw (ex-info (str "nth: cannot resolve vector: " vec-expr)
-                                     {:vec vec-expr})))
-                 _ (when-not (:vector vec-node)
-                     (throw (ex-info (str "nth: not a vector node: " vec-expr)
-                                     {:vec vec-expr})))
+           (let [[_ vec-node] (bind/resolve-collection env vec-expr :vector "nth")
                  _ (when-not (integer? idx-expr)
                      (throw (ex-info "nth: index must be a literal integer"
                                      {:idx idx-expr})))
@@ -682,237 +602,52 @@
       ;; how map/filter/reduce already handle collections. They walk
       ;; the structural tree at bind time and constrain each element.
 
-      ;; ── vector-of: constrain all vector elements to a type ──
-      ;; (vector-of integer v) — every element of v must be an integer.
-      ;; In defdomain: (defdomain IntVec (vector-of integer))
-      ;; Walks vector children, intersecting each with the type domain.
+      ;; ── vector-of: produce a composite vector domain ──────
+      ;; (vector-of integer) → composite domain where every element is integer.
+      ;; Use with narrow: (narrow v (vector-of integer))
+      ;; In def: (def IntVec (vector-of integer))
       (defop 'vector-of
         {:construct
          (fn [env args]
-           (let [;; Determine arity:
-                 ;; Nullary: invalid
-                 ;; Unary: (vector-of type) in schema/domain context — set own domain kind
-                 ;; Binary: (vector-of type vec-expr) — constraint form
-                 _ (when (< (count args) 1)
-                     (throw (ex-info "vector-of requires at least 1 argument" {:args args})))
+           (when (not= (count args) 1)
+             (throw (ex-info "vector-of requires exactly 1 argument: (vector-of type). Use (narrow v (vector-of type)) to constrain a vector."
+                             {:args args})))
+           (let [elem-domain (schema/resolve-domain-schema env (first args))
+                 composite (dom/vector-of-dom elem-domain)]
+             (assoc env :domain composite :type-domain composite)))})
 
-                 type-expr (first args)
-                 vec-expr (when (= 2 (count args)) (second args))
-
-                 ;; Resolve the type constraint
-                 type-node (tree/find env [type-expr])
-                 type-info (when type-node (bind/resolve type-node))
-                 type-dom (:type-domain type-info)]
-
-             (if-not vec-expr
-               ;; Nullary: (vector-of integer) → produce composite domain value
-               (let [elem-dom (or type-dom
-                                  (resolve-type-expr env type-expr))]
-                 (if elem-dom
-                   (let [composite (dom/vector-of-dom elem-dom)]
-                     (assoc env :domain composite :type-domain composite))
-                   (throw (ex-info (str "vector-of: cannot resolve element type to a domain: " type-expr)
-                                   {:type type-expr}))))
-
-               ;; Binary: constrain vector elements
-               (let [;; Try to resolve element type to a domain value (covers type-dom + resolve-type-expr)
-                     elem-dom (or type-dom (resolve-type-expr env type-expr))
-                     ;; Resolve the vector
-                     vec-node (cond
-                                (symbol? vec-expr)
-                                (when-let [found (tree/find env [vec-expr])]
-                                  (bind/resolve found))
-                                (seq? vec-expr)
-                                (let [[env' path] (bind/ensure-node-abs env vec-expr)]
-                                  (bind/resolve-at (tree/root env') path))
-                                :else nil)
-                     _ (when-not vec-node
-                         (throw (ex-info "vector-of: cannot resolve vector"
-                                         {:vec vec-expr})))
-                     _ (when-not (:vector vec-node)
-                         (throw (ex-info "vector-of: second argument must be a vector"
-                                         {:vec vec-expr})))
-                     my-pos (tree/position env)]
-
-                 (if elem-dom
-                   ;; Fast path: build composite domain + apply-composite-constraint
-                   (apply-composite-and-propagate
-                    env (tree/position vec-node) (dom/vector-of-dom elem-dom) my-pos "vector-of")
-
-                   ;; Slow path: use narrow on each element
-                   (let [children (sort-by ::tree/name
-                                           (clojure.core/filter #(integer? (::tree/name %))
-                                                                (tree/children vec-node)))
-                         env-root
-                         (reduce
-                          (fn [env-root child]
-                            (let [idx (::tree/name child)
-                                  env-at-pos (tree/cd env-root my-pos)
-                                  env-after (bind/bind env-at-pos
-                                                       (list 'narrow (list 'nth vec-expr idx) type-expr))]
-                              (tree/root env-after)))
-                          (tree/root env)
-                          children)]
-                     (or (tree/cd env-root my-pos)
-                         (throw (ex-info "vector-of: lost position" {:pos my-pos})))))))))})
-
-      ;; ── tuple: per-position type constraints ────────────────
-      ;; (tuple [integer string boolean] v) — v must be a 3-element vector
-      ;; where element 0 is integer, element 1 is string, element 2 is boolean.
-      ;; In defdomain: (defdomain Point (tuple [number number]))
+      ;; ── tuple: produce a composite tuple domain ─────────────
+      ;; (tuple [integer string]) → composite domain with per-position types.
+      ;; Use with narrow: (narrow v (tuple [integer string]))
+      ;; In def: (def Point (tuple [number number]))
       (defop 'tuple
         {:construct
          (fn [env args]
-           (let [_ (when (< (count args) 1)
-                     (throw (ex-info "tuple requires at least 1 argument" {:args args})))
-
-                 types-vec (first args)
-                 vec-expr (when (= 2 (count args)) (second args))
-
+           (when (not= (count args) 1)
+             (throw (ex-info "tuple requires exactly 1 argument: (tuple [types...]). Use (narrow v (tuple [types...])) to constrain a vector."
+                             {:args args})))
+           (let [types-vec (first args)
                  _ (when-not (vector? types-vec)
                      (throw (ex-info "tuple: first argument must be a vector of types"
-                                     {:types types-vec})))]
+                                     {:types types-vec})))
+                 elem-domains (mapv #(schema/resolve-domain-schema env %) types-vec)
+                 composite (dom/tuple-dom elem-domains)]
+             (assoc env :domain composite :type-domain composite)))})
 
-             (if-not vec-expr
-               ;; Nullary: (tuple [integer string]) → produce composite domain value
-               (let [elem-doms (mapv (fn [type-sym]
-                                       (let [d (resolve-type-expr env type-sym)]
-                                         (when-not d
-                                           (throw (ex-info (str "tuple: cannot resolve element type to a domain: " type-sym)
-                                                           {:type type-sym})))
-                                         d))
-                                     types-vec)
-                     composite (dom/tuple-dom elem-doms)]
-                 (assoc env :domain composite :type-domain composite))
-
-               ;; Binary: constrain vector to match tuple shape
-               (let [;; Try to resolve all element types to domains
-                     elem-doms (mapv (fn [type-sym] (resolve-type-expr env type-sym)) types-vec)
-                     all-resolved? (every? some? elem-doms)
-                     ;; Resolve the vector
-                     vec-node (cond
-                                (symbol? vec-expr)
-                                (when-let [found (tree/find env [vec-expr])]
-                                  (bind/resolve found))
-                                (seq? vec-expr)
-                                (let [[env' path] (bind/ensure-node-abs env vec-expr)]
-                                  (bind/resolve-at (tree/root env') path))
-                                :else nil)
-                     _ (when-not vec-node
-                         (throw (ex-info "tuple: cannot resolve vector"
-                                         {:vec vec-expr})))
-                     _ (when-not (:vector vec-node)
-                         (throw (ex-info "tuple: second argument must be a vector"
-                                         {:vec vec-expr})))
-                     children (sort-by ::tree/name
-                                       (clojure.core/filter #(integer? (::tree/name %))
-                                                            (tree/children vec-node)))
-                     n (clojure.core/count children)
-                     expected-n (count types-vec)
-                     _ (when (not= n expected-n)
-                         (throw (ex-info (str "tuple: vector has " n " elements but tuple specifies " expected-n)
-                                         {:actual n :expected expected-n :vec vec-expr})))
-                     my-pos (tree/position env)]
-
-                 (if all-resolved?
-                   ;; Fast path: build composite domain + apply-composite-constraint
-                   (apply-composite-and-propagate
-                    env (tree/position vec-node) (dom/tuple-dom elem-doms) my-pos "tuple")
-
-                   ;; Slow path: use narrow for non-primitive types
-                   (let [env-root
-                         (reduce
-                          (fn [env-root [idx type-sym]]
-                            (let [env-at-pos (tree/cd env-root my-pos)
-                                  env-after (bind/bind env-at-pos
-                                                       (list 'narrow (list 'nth vec-expr idx) type-sym))]
-                              (tree/root env-after)))
-                          (tree/root env)
-                          (map-indexed vector types-vec))]
-                     (or (tree/cd env-root my-pos)
-                         (throw (ex-info "tuple: lost position" {:pos my-pos})))))))))})
-
-      ;; ── map-of: constrain all map entries ───────────────────
-      ;; (map-of keyword integer m) — all keys must be keywords,
-      ;; all values must be integers.
-      ;; In defdomain: (defdomain Scores (map-of keyword integer))
+      ;; ── map-of: produce a composite map domain ─────────────
+      ;; (map-of keyword integer) → composite domain for map entries.
+      ;; Use with narrow: (narrow m (map-of keyword integer))
+      ;; In def: (def Scores (map-of keyword integer))
       (defop 'map-of
         {:construct
          (fn [env args]
-           (let [_ (when (< (count args) 2)
-                     (throw (ex-info "map-of requires at least 2 arguments: (map-of key-type val-type [map])"
-                                     {:args args})))
-
-                 key-type-expr (first args)
-                 val-type-expr (second args)
-                 map-expr (when (= 3 (count args)) (nth args 2))
-
-                 ;; Resolve key type
-                 key-node (tree/find env [key-type-expr])
-                 key-info (when key-node (bind/resolve key-node))
-                 key-dom (:type-domain key-info)
-
-                 ;; Resolve value type
-                 val-node (tree/find env [val-type-expr])
-                 val-info (when val-node (bind/resolve val-node))
-                 val-dom (:type-domain val-info)]
-
-             (if-not map-expr
-               ;; Nullary: (map-of keyword integer) → produce composite domain value
-               (let [k-dom (or key-dom (resolve-type-expr env key-type-expr))
-                     v-dom (or val-dom (resolve-type-expr env val-type-expr))]
-                 (if (and k-dom v-dom)
-                   (let [composite (dom/map-of-dom k-dom v-dom)]
-                     (assoc env :domain composite :type-domain composite))
-                   (throw (ex-info (str "map-of: cannot resolve key/val types to domains")
-                                   {:key-type key-type-expr :val-type val-type-expr}))))
-
-               ;; Ternary: constrain map entries
-               (let [;; Try to resolve both key and value types to domains
-                     k-dom (or key-dom (resolve-type-expr env key-type-expr))
-                     v-dom (or val-dom (resolve-type-expr env val-type-expr))
-                     ;; Resolve the map
-                     map-node (cond
-                                (symbol? map-expr)
-                                (when-let [found (tree/find env [map-expr])]
-                                  (bind/resolve found))
-                                (seq? map-expr)
-                                (let [[env' path] (bind/ensure-node-abs env map-expr)]
-                                  (bind/resolve-at (tree/root env') path))
-                                :else nil)
-                     _ (when-not map-node
-                         (throw (ex-info "map-of: cannot resolve map"
-                                         {:map map-expr})))
-                     _ (when-not (:map map-node)
-                         (throw (ex-info "map-of: third argument must be a map"
-                                         {:map map-expr})))
-                     my-pos (tree/position env)]
-
-                 (if (and k-dom v-dom)
-                   ;; Fast path: build composite domain + apply-composite-constraint
-                   (apply-composite-and-propagate
-                    env (tree/position map-node) (dom/map-of-dom k-dom v-dom) my-pos "map-of")
-
-                   ;; Slow path: use narrow for non-primitive value types
-                   (let [children (tree/children map-node)
-                         env-root
-                         (reduce
-                          (fn [env-root child]
-                            (let [k (::tree/name child)]
-                              ;; Check key type
-                              (when key-dom
-                                (when-not (dom/contains-val? key-dom k)
-                                  (throw (ex-info (str "map-of: key " k " does not match key type")
-                                                  {:key k :key-type key-type-expr}))))
-                              ;; Constrain value via narrow
-                              (let [env-at-pos (tree/cd env-root my-pos)
-                                    env-after (bind/bind env-at-pos
-                                                         (list 'narrow (list 'get map-expr k) val-type-expr))]
-                                (tree/root env-after))))
-                          (tree/root env)
-                          children)]
-                     (or (tree/cd env-root my-pos)
-                         (throw (ex-info "map-of: lost position" {:pos my-pos})))))))))})
+           (when (not= (count args) 2)
+             (throw (ex-info "map-of requires exactly 2 arguments: (map-of key-type val-type). Use (narrow m (map-of key-type val-type)) to constrain a map."
+                             {:args args})))
+           (let [key-domain (schema/resolve-domain-schema env (first args))
+                 val-domain (schema/resolve-domain-schema env (second args))
+                 composite (dom/map-of-dom key-domain val-domain)]
+             (assoc env :domain composite :type-domain composite)))})
 
       ;; ── narrow: explicit structural constraint ──────────────
       ;; (narrow target template) — constrains target against template.
@@ -971,21 +706,7 @@
       (defop 'count
         {:construct
          (fn [env [coll-expr]]
-           (let [coll-node (cond
-                             (symbol? coll-expr)
-                             (when-let [found (tree/find env [coll-expr])]
-                               (bind/resolve found))
-
-                             (seq? coll-expr)
-                             (let [[env' path] (bind/ensure-node-abs env coll-expr)]
-                               (bind/resolve-at (tree/root env') path))
-
-                             :else
-                             (throw (ex-info "count: arg must be a symbol or expression"
-                                             {:coll coll-expr})))
-                 _ (when-not coll-node
-                     (throw (ex-info (str "count: cannot resolve: " coll-expr)
-                                     {:coll coll-expr})))
+           (let [[_ coll-node] (bind/resolve-to-node env coll-expr "count")
                  n (cond
                      (:vector coll-node)
                      (clojure.core/count (filter #(integer? (::tree/name %))
@@ -1010,20 +731,7 @@
                  f-sym (gensym "mapfn__")
                  env (bind/bind env f-sym f-expr)
                  ;; Resolve the collection (use the original coll-expr for lookup)
-                 coll-node (cond
-                             (symbol? coll-expr)
-                             (when-let [found (tree/find env [coll-expr])]
-                               (bind/resolve found))
-                             (seq? coll-expr)
-                             (let [[env' path] (bind/ensure-node-abs env coll-expr)]
-                               (bind/resolve-at (tree/root env') path))
-                             :else nil)
-                 _ (when-not coll-node
-                     (throw (ex-info "map: cannot resolve collection"
-                                     {:coll coll-expr})))
-                 _ (when-not (:vector coll-node)
-                     (throw (ex-info "map: second argument must be a vector"
-                                     {:coll coll-expr})))]
+                 [_ coll-node] (bind/resolve-collection env coll-expr :vector "map")]
              ;; Build a vector expression: [(f e0) (f e1) ...]
              ;; where each ei is (nth coll-expr i)
              (let [children (sort-by ::tree/name
@@ -1048,20 +756,7 @@
                  pred-sym (gensym "filtfn__")
                  env (bind/bind env pred-sym pred-expr)
                  ;; Resolve the collection
-                 coll-node (cond
-                             (symbol? coll-expr)
-                             (when-let [found (tree/find env [coll-expr])]
-                               (bind/resolve found))
-                             (seq? coll-expr)
-                             (let [[env' path] (bind/ensure-node-abs env coll-expr)]
-                               (bind/resolve-at (tree/root env') path))
-                             :else nil)
-                 _ (when-not coll-node
-                     (throw (ex-info "filter: cannot resolve collection"
-                                     {:coll coll-expr})))
-                 _ (when-not (:vector coll-node)
-                     (throw (ex-info "filter: second argument must be a vector"
-                                     {:coll coll-expr})))
+                 [_ coll-node] (bind/resolve-collection env coll-expr :vector "filter")
                  children (sort-by ::tree/name
                                    (clojure.core/filter #(integer? (::tree/name %))
                                                         (tree/children coll-node)))
@@ -1091,20 +786,7 @@
                  f-sym (gensym "redfn__")
                  env (bind/bind env f-sym f-expr)
                  ;; Resolve the collection
-                 coll-node (cond
-                             (symbol? coll-expr)
-                             (when-let [found (tree/find env [coll-expr])]
-                               (bind/resolve found))
-                             (seq? coll-expr)
-                             (let [[env' path] (bind/ensure-node-abs env coll-expr)]
-                               (bind/resolve-at (tree/root env') path))
-                             :else nil)
-                 _ (when-not coll-node
-                     (throw (ex-info "reduce: cannot resolve collection"
-                                     {:coll coll-expr})))
-                 _ (when-not (:vector coll-node)
-                     (throw (ex-info "reduce: third argument must be a vector"
-                                     {:coll coll-expr})))
+                 [_ coll-node] (bind/resolve-collection env coll-expr :vector "reduce")
                  children (sort-by ::tree/name
                                    (clojure.core/filter #(integer? (::tree/name %))
                                                         (tree/children coll-node)))
@@ -1171,22 +853,7 @@
                      (throw (ex-info "drop: first arg must be a literal integer"
                                      {:n n-expr})))
                  ;; Resolve the vector
-                 vec-node (cond
-                            (symbol? vec-expr)
-                            (when-let [found (tree/find env [vec-expr])]
-                              (bind/resolve found))
-                            (seq? vec-expr)
-                            (let [[env' path] (bind/ensure-node-abs env vec-expr)]
-                              (bind/resolve-at (tree/root env') path))
-                            :else
-                            (throw (ex-info "drop: second arg must be a symbol or expression"
-                                            {:vec vec-expr})))
-                 _ (when-not vec-node
-                     (throw (ex-info (str "drop: cannot resolve: " vec-expr)
-                                     {:vec vec-expr})))
-                 _ (when-not (:vector vec-node)
-                     (throw (ex-info (str "drop: not a vector node: " vec-expr)
-                                     {:vec vec-expr})))
+                 [_ vec-node] (bind/resolve-collection env vec-expr :vector "drop")
                  ;; Get sorted integer children (indices)
                  children (sort-by ::tree/name
                                    (clojure.core/filter #(integer? (::tree/name %))
@@ -1206,23 +873,7 @@
       (defop 'dissoc
         {:construct
          (fn [env [map-expr & key-exprs]]
-           (let [;; Resolve the map
-                 map-node (cond
-                            (symbol? map-expr)
-                            (when-let [found (tree/find env [map-expr])]
-                              (bind/resolve found))
-                            (seq? map-expr)
-                            (let [[env' path] (bind/ensure-node-abs env map-expr)]
-                              (bind/resolve-at (tree/root env') path))
-                            :else
-                            (throw (ex-info "dissoc: first arg must be a symbol or expression"
-                                            {:map map-expr})))
-                 _ (when-not map-node
-                     (throw (ex-info (str "dissoc: cannot resolve: " map-expr)
-                                     {:map map-expr})))
-                 _ (when-not (:map map-node)
-                     (throw (ex-info (str "dissoc: not a map node: " map-expr)
-                                     {:map map-expr})))
+           (let [[_ map-node] (bind/resolve-collection env map-expr :map "dissoc")
                  remove-keys (set key-exprs)
                  ;; Get the remaining children (those not being removed)
                  remaining-children (clojure.core/filter

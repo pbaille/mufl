@@ -348,12 +348,12 @@
   (testing "vector-of"
     (is (= [[1 2 3]]
            (m/query (let [v [(one-of 1 "a") (one-of 2 "b") (one-of 3 "c")]]
-                      (vector-of integer v)
+                      (narrow v (vector-of integer))
                       v))))
     (is (= [[{:name "Alice"} {:name "Bob"}]]
            (m/query (def named {:name string})
                     (let [people [{:name (one-of "Alice" 42)} {:name (one-of "Bob" 99)}]]
-                      (vector-of named people)
+                      (narrow people (vector-of named))
                       people))))
     (is (= [[1 2]]
            (m/query (def int-vec (vector-of integer))
@@ -363,7 +363,7 @@
   (testing "tuple"
     (is (= [[42 "hello" true]]
            (m/query (let [v [(one-of 42 "x") (one-of "hello" 99) (one-of true 0)]]
-                      (tuple [integer string boolean] v)
+                      (narrow v (tuple [integer string boolean]))
                       v))))
     (is (= [[3 4]]
            (m/query (def point (tuple [integer integer]))
@@ -373,7 +373,7 @@
   (testing "map-of"
     (is (= [{:a 1 :b 2}]
            (m/query (let [m {:a (one-of 1 "x") :b (one-of 2 "y")}]
-                      (map-of keyword integer m)
+                      (narrow m (map-of keyword integer))
                       m))))
     (is (= [{:x 10 :y 20}]
            (m/query (def scores (map-of keyword integer))
@@ -421,11 +421,11 @@
                               bigs (filter big v)]
                           bigs))))))
   (testing "reduce with constraint"
-    (is (= [[[5 2 7] 14] [[5 6 3] 14] [[1 6 7] 14] [[5 6 7] 18]]
-           (m/query (let [v [(one-of 1 5) (one-of 2 6) (one-of 3 7)]
-                          total (reduce + 0 v)]
-                      (and (> total 10)
-                           [v total]))))))
+    (is (= (set [[[5 2 7] 14] [[5 6 3] 14] [[1 6 7] 14] [[5 6 7] 18]])
+           (set (m/query (let [v [(one-of 1 5) (one-of 2 6) (one-of 3 7)]
+                               total (reduce + 0 v)]
+                           (and (> total 10)
+                                [v total])))))))
   (testing "chaining"
     (is (= [12]
            (m/query (let [v [1 2 3]

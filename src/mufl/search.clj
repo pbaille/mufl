@@ -140,12 +140,8 @@
   "Narrow the domain of the node at path to new-dom, then propagate watchers.
    Returns the updated (rooted) env, or nil on contradiction."
   [env path new-dom]
-  (let [env     (tree/put env path :domain new-dom)
-        node    (tree/cd env path)
-        watchers (:watched-by node)]
-    (if (seq watchers)
-      (bind/propagate env (vec watchers))
-      env)))
+  (let [env (tree/put env path :domain new-dom)]
+    (bind/propagate-watchers env path)))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Fork expansion helpers (mirrors expand-fork in solve.clj)

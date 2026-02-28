@@ -512,7 +512,7 @@ Subtract on composites is approximate for superset/overlap cases — the precise
 
 ## How composite domains bridge into the tree
 
-When the mufl runtime encounters a composite type constructor — whether from a binary form like `(vector-of integer v)`, a `defdomain` schema like `(defdomain IntVec (vector-of integer))`, or `=` unification between a variable and a composite domain — it builds a composite domain and applies it structurally.
+When the mufl runtime encounters a composite type constructor — whether from `(narrow v (vector-of integer))`, a `def` schema like `(def IntVec (vector-of integer))`, or `=` unification between a variable and a composite domain — it builds a composite domain and applies it structurally.
 
 The mechanism is `apply-composite-constraint` in `bind.clj`. It walks the collection node's children and intersects each element's domain with the appropriate part of the composite domain:
 
@@ -520,7 +520,9 @@ The mechanism is `apply-composite-constraint` in `bind.clj`. It walks the collec
 - For `tuple`: each child at position *i* gets intersected with `(nth elements i)`
 - For `map-of`: each key child gets intersected with the key domain, each value child with the value domain
 
-This is the **same mechanism** regardless of how the composite constraint was introduced. The user writes `(vector-of integer v)` or `(IntVec v)` or `(= v some-typed-vector)`, and the same structural walk applies the constraint.
+This is the **same mechanism** regardless of how the composite constraint was introduced. The user writes `(narrow v (vector-of integer))` or `(narrow v IntVec)` or `(= v some-typed-vector)`, and the same structural walk applies the constraint.
+
+**Callable domains** extend this further: any bound domain value can be called directly as a function — `(intvec v)` is equivalent to `(narrow v intvec)`. This works in both expression and pattern position (see [Introduction — Callable domains](introduction.md#callable-domains) for syntax). The same `apply-domain-constraint` mechanism in `schema.clj` handles both the `narrow` form and the callable domain dispatch.
 
 ---
 

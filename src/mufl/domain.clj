@@ -91,6 +91,30 @@
   [key-dom val-dom]
   {:kind :map-of, :key key-dom, :value val-dom})
 
+;; ── Structural domain constructors ──────────────────────────────
+
+(defn map-fields-dom
+  "Domain of maps with specific named fields, each constrained to a domain.
+   fields is a map of {keyword → domain}.
+   Semantics: 'at least these fields' — fewer constraints = more values accepted."
+  [fields]
+  {:kind :map-fields, :fields fields})
+
+(defn intersection-dom
+  "Domain that is the intersection of N sub-domains.
+   Flattens nested intersections for canonical form.
+   With 0 domains → any, 1 domain → unwrap."
+  [domains]
+  (let [flat (mapcat (fn [d]
+                       (if (= :intersection (:kind d))
+                         (:domains d)
+                         [d]))
+                     domains)]
+    (case (count flat)
+      0 any
+      1 (first flat)
+      {:kind :intersection, :domains (vec flat)})))
+
 ;; ── Spiral domain (for unbounded integer enumeration) ───────
 
 (defn spiral-dom
@@ -159,7 +183,7 @@
     :spiral nil  ;; infinite — not enumerable
     :any nil
     :type nil  ;; open types are not enumerable
-    (:vector-of :tuple :map-of) nil  ;; composite domains are non-enumerable
+    (:vector-of :tuple :map-of :map-fields :intersection) nil  ;; composite/structural domains are non-enumerable
     nil))
 
 (defn finite?
@@ -213,6 +237,12 @@
                            (and (contains-val? (:key d) k)
                                 (contains-val? (:value d) val)))
                          v))
+    :map-fields (and (map? v)
+                     (every? (fn [[field-key field-dom]]
+                               (and (contains? v field-key)
+                                    (contains-val? field-dom (get v field-key))))
+                             (:fields d)))
+    :intersection (every? #(contains-val? % v) (:domains d))
     false))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -319,7 +349,7 @@
 (defn- composite-kind?
   "Is this a composite domain kind?"
   [k]
-  (#{:vector-of :tuple :map-of} k))
+  (#{:vector-of :tuple :map-of :map-fields :intersection} k))
 
 (defn- combine-relations
   "Combine multiple positional relations into a product relation.
@@ -375,6 +405,72 @@
     ;; Cross-kind composite or composite vs flat → disjoint
     (composite-kind? (:kind d2)) :disjoint
     :else nil))
+
+;; ── Structural relate functions ──────────────────────────────────
+
+(defn- map-fields-relate
+  "Relate a :map-fields domain to another domain.
+   Semantics: fewer field constraints = more values accepted (superset).
+   {name: string, age: int} ⊂ {name: string} because the latter accepts more maps."
+  [d1 d2]
+  (cond
+    (= :map-fields (:kind d2))
+    (let [f1 (:fields d1)
+          f2 (:fields d2)
+          k1 (set (keys f1))
+          k2 (set (keys f2))
+          shared (clojure.set/intersection k1 k2)
+          only-in-1 (clojure.set/difference k1 k2)
+          only-in-2 (clojure.set/difference k2 k1)]
+      ;; Compare shared fields
+      (let [field-rels (mapv (fn [k] (relate (get f1 k) (get f2 k))) shared)]
+        (cond
+          ;; If any shared field is disjoint, the whole thing is disjoint
+          (some #{:disjoint} field-rels) :disjoint
+
+          ;; Same keys, compare field by field
+          (and (empty? only-in-1) (empty? only-in-2))
+          (combine-relations field-rels)
+
+          ;; d1 has extra fields (more constrained → subset if shared fields allow)
+          (and (seq only-in-1) (empty? only-in-2))
+          (if (every? #{:equal :subset} field-rels) :subset :overlap)
+
+          ;; d2 has extra fields (more constrained → d1 is superset if shared allow)
+          (and (empty? only-in-1) (seq only-in-2))
+          (if (every? #{:equal :superset} field-rels) :superset :overlap)
+
+          ;; Both have unique fields → overlap
+          :else :overlap)))
+
+    ;; map-fields vs map-of: map-of constrains all keys/values, map-fields constrains specific fields
+    ;; Generally overlap (map-of is a different structural shape)
+    (= :map-of (:kind d2)) :overlap
+
+    ;; Cross-kind composite → disjoint
+    (composite-kind? (:kind d2)) :disjoint
+    :else nil))
+
+(defn- intersection-relate
+  "Relate an :intersection domain to another domain.
+   Conservative: compares by checking each component."
+  [d1 d2]
+  (cond
+    ;; intersection vs intersection — conservative overlap
+    (= :intersection (:kind d2))
+    (if (= (:domains d1) (:domains d2)) :equal :overlap)
+
+    ;; Check if d1 (intersection of components) relates to d2
+    ;; d1 is a subset of each component, so if any component is subset/equal to d2, d1 is subset
+    :else
+    (let [component-rels (mapv #(relate % d2) (:domains d1))]
+      (cond
+        ;; If all components are superset/equal of d2, intersection is likely superset (conservative: overlap)
+        ;; If any component is disjoint with d2, the intersection is disjoint
+        (some #{:disjoint} component-rels) :disjoint
+        ;; If any component is subset/equal to d2, intersection is also subset
+        (some #{:subset :equal} component-rels) :subset
+        :else :overlap))))
 
 ;; ── Range relate ────────────────────────────────────────────────
 
@@ -492,14 +588,16 @@
 
 (def ^:private kind-relate
   "Dispatch table: :kind → relate function."
-  {:single    single-relate
-   :finite    finite-relate
-   :type      type-relate
-   :range     range-relate
-   :spiral    spiral-relate
-   :vector-of vector-of-relate
-   :tuple     tuple-relate
-   :map-of    map-of-relate})
+  {:single       single-relate
+   :finite       finite-relate
+   :type         type-relate
+   :range        range-relate
+   :spiral       spiral-relate
+   :vector-of    vector-of-relate
+   :tuple        tuple-relate
+   :map-of       map-of-relate
+   :map-fields   map-fields-relate
+   :intersection intersection-relate})
 
 (defn relate
   "Returns the set-theoretic relation of d1 to d2.
@@ -583,6 +681,35 @@
     (map-of-dom (intersect (:key d1) (:key d2))
                 (intersect (:value d1) (:value d2)))
 
+    ;; map-fields ∩ map-fields — merge fields, intersect overlapping
+    (and (= :map-fields (:kind d1)) (= :map-fields (:kind d2)))
+    (let [f1 (:fields d1)
+          f2 (:fields d2)
+          all-keys (clojure.set/union (set (keys f1)) (set (keys f2)))
+          merged (into {} (map (fn [k]
+                                 (let [v1 (get f1 k)
+                                       v2 (get f2 k)]
+                                   [k (cond
+                                        (and v1 v2) (intersect v1 v2)
+                                        v1 v1
+                                        :else v2)]))
+                               all-keys))]
+      (map-fields-dom merged))
+
+    ;; map-fields ∩ map-of (or vice versa) — use intersection domain
+    (and (= :map-fields (:kind d1)) (= :map-of (:kind d2)))
+    (intersection-dom [d1 d2])
+
+    (and (= :map-of (:kind d1)) (= :map-fields (:kind d2)))
+    (intersection-dom [d1 d2])
+
+    ;; intersection ∩ anything — flatten into intersection
+    (= :intersection (:kind d1))
+    (intersection-dom (conj (:domains d1) d2))
+
+    (= :intersection (:kind d2))
+    (intersection-dom (conj (:domains d2) d1))
+
     ;; finite ∩ finite
     (and (members d1) (members d2))
     (finite (clojure.set/intersection (members d1) (members d2)))
@@ -661,6 +788,17 @@
     (and (= :map-of (:kind d1)) (= :map-of (:kind d2)))
     (map-of-dom (unite (:key d1) (:key d2))
                 (unite (:value d1) (:value d2)))
+
+    ;; map-fields ∪ map-fields — keep only shared fields, unite their domains
+    (and (= :map-fields (:kind d1)) (= :map-fields (:kind d2)))
+    (let [f1 (:fields d1)
+          f2 (:fields d2)
+          shared-keys (clojure.set/intersection (set (keys f1)) (set (keys f2)))]
+      (if (empty? shared-keys)
+        any
+        (map-fields-dom (into {} (map (fn [k]
+                                        [k (unite (get f1 k) (get f2 k))])
+                                      shared-keys)))))
 
     ;; Both finite — set union
     (and (members d1) (members d2))
@@ -999,7 +1137,16 @@
     :single nil  ;; already ground
 
     :finite
-    (let [sorted (sort (:values d))
+    (let [;; Sort with type-safe comparator: group by type name first,
+          ;; then by natural order within each type. This prevents
+          ;; ClassCastException when finite domains contain mixed types
+          ;; (e.g., #{1 "Alice"} from (one-of 1 "Alice")).
+          sorted (sort (fn [a b]
+                         (let [ta (type a) tb (type b)]
+                           (if (= ta tb)
+                             (compare a b)
+                             (compare (.getName ^Class ta) (.getName ^Class tb)))))
+                       (:values d))
           n      (count sorted)
           mid    (quot n 2)
           left   (set (take mid sorted))

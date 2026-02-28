@@ -109,8 +109,8 @@
   (narrow-lte env [b-path a-path]))
 
 (def composite-kinds
-  "Set of composite domain kinds."
-  #{:vector-of :tuple :map-of})
+  "Set of composite domain kinds (including structural domains)."
+  #{:vector-of :tuple :map-of :map-fields :intersection})
 
 (declare apply-composite-constraint)
 
@@ -201,6 +201,46 @@
                     children)
             nil ;; contradiction: key doesn't match
             (narrow-children env (map (fn [c] [c val-dom]) children)))))
+
+      :map-fields
+      (if-not (:map target-node)
+        nil ;; contradiction: map-fields on non-map
+        (let [fields (:fields composite-dom)]
+          (reduce (fn [{:keys [env changed]} [field-key field-dom]]
+                    (let [target-resolved-path (tree/position target-node)
+                          child-path (conj target-resolved-path field-key)
+                          child (tree/cd env child-path)]
+                      (if child
+                        (let [resolved-child (resolve child)
+                              child-path (tree/position resolved-child)
+                              child-dom (or (:domain resolved-child) dom/any)
+                              narrowed (dom/intersect child-dom field-dom)]
+                          (cond
+                            (dom/void? narrowed)
+                            (reduced nil)
+
+                            (= narrowed child-dom)
+                            {:env env :changed changed}
+
+                            :else
+                            {:env (set-domain env child-path narrowed)
+                             :changed (conj changed child-path)}))
+                        ;; Field not present — not necessarily a contradiction
+                        ;; (the map might not have this field yet)
+                        {:env env :changed changed})))
+                  {:env env :changed []}
+                  fields)))
+
+      :intersection
+      ;; Apply each sub-domain in sequence
+      (reduce (fn [{:keys [env changed]} sub-dom]
+                (let [result (apply-composite-constraint env target-path sub-dom)]
+                  (if (nil? result)
+                    (reduced nil)
+                    {:env (:env result)
+                     :changed (into changed (:changed result))})))
+              {:env env :changed []}
+              (:domains composite-dom))
 
       ;; Unknown composite kind — no-op
       {:env env :changed []})))
@@ -468,3 +508,17 @@
                                    (remove (set rest-pending))
                                    (into (vec rest-pending)))]
               (recur env' new-pending))))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; Watcher propagation helper
+;; ════════════════════════════════════════════════════════════════
+
+(defn propagate-watchers
+  "Look up watchers on the node at path, propagate if any.
+   Returns the updated env, or nil on contradiction."
+  [env path]
+  (let [node (tree/cd env path)
+        watchers (:watched-by node)]
+    (if (seq watchers)
+      (propagate env (vec watchers))
+      env)))
