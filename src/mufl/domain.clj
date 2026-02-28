@@ -983,7 +983,7 @@
   (and (not (void? d))
        (not (any? d))
        (or (and (type? d) (= :boolean (:type d)))
-           (boolean (get kind-step (:kind d))))))
+           (#{:single :finite :range :spiral} (:kind d)))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Domain splitting (for binary search)

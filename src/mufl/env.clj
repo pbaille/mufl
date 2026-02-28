@@ -17,6 +17,31 @@
   (-> (tree/ensure-path env [name])
       (tree/put [name] (assoc fields :primitive true))))
 
+(defn- apply-composite-and-propagate
+  "Apply a composite domain to a target node, propagate watchers, and
+   navigate back to my-pos. Used by vector-of, tuple, and map-of fast paths.
+   Returns the env at my-pos, or throws on contradiction."
+  [env target-path composite-dom my-pos error-label]
+  (let [result (bind/apply-composite-constraint (tree/root env) target-path composite-dom)]
+    (if-not result
+      (throw (ex-info (str error-label ": contradiction") {}))
+      (let [env' (:env result)
+            changed (:changed result)
+            env' (if (seq changed)
+                   (let [watchers (->> changed
+                                       (mapcat (fn [p]
+                                                 (let [node (tree/at env' p)]
+                                                   (:watched-by node))))
+                                       (distinct)
+                                       vec)]
+                     (if (seq watchers)
+                       (or (bind/propagate env' watchers)
+                           (throw (ex-info (str "Contradiction during " error-label " propagation") {})))
+                       env'))
+                   env')]
+        (or (tree/cd env' my-pos)
+            (throw (ex-info (str error-label ": lost position") {:pos my-pos})))))))
+
 (defn defprims
   "Register multiple primitives. specs is a seq of [name fields] pairs."
   [env specs]
@@ -228,7 +253,9 @@
            ;; vec-expr should be a vector literal of symbols
            (let [my-pos (tree/position env)
                  paths (mapv (fn [sym]
-                               (let [p (bind/resolve-to-path env sym)]
+                               (let [p (when (symbol? sym)
+                                         (when-let [found (tree/find env [sym])]
+                                           (tree/position (bind/resolve found))))]
                                  (when-not p
                                    (throw (ex-info (str "Cannot resolve in distinct: " sym)
                                                    {:sym sym})))
@@ -699,28 +726,8 @@
 
                  (if elem-dom
                    ;; Fast path: build composite domain + apply-composite-constraint
-                   (let [composite (dom/vector-of-dom elem-dom)
-                         target-path (tree/position vec-node)
-                         result (bind/apply-composite-constraint (tree/root env) target-path composite)]
-                     (if-not result
-                       (throw (ex-info "vector-of: contradiction" {:type type-expr :vec vec-expr}))
-                       (let [env' (:env result)
-                             changed (:changed result)
-                             ;; Propagate watchers for all changed paths
-                             env' (if (seq changed)
-                                    (let [watchers (->> changed
-                                                        (mapcat (fn [p]
-                                                                  (let [node (tree/at env' p)]
-                                                                    (:watched-by node))))
-                                                        (distinct)
-                                                        vec)]
-                                      (if (seq watchers)
-                                        (or (bind/propagate env' watchers)
-                                            (throw (ex-info "Contradiction during vector-of propagation" {})))
-                                        env'))
-                                    env')]
-                         (or (tree/cd env' my-pos)
-                             (throw (ex-info "vector-of: lost position" {:pos my-pos}))))))
+                   (apply-composite-and-propagate
+                    env (tree/position vec-node) (dom/vector-of-dom elem-dom) my-pos "vector-of")
 
                    ;; Slow path: use narrow on each element
                    (let [children (sort-by ::tree/name
@@ -800,28 +807,8 @@
 
                  (if all-resolved?
                    ;; Fast path: build composite domain + apply-composite-constraint
-                   (let [composite (dom/tuple-dom elem-doms)
-                         target-path (tree/position vec-node)
-                         result (bind/apply-composite-constraint (tree/root env) target-path composite)]
-                     (if-not result
-                       (throw (ex-info "tuple: contradiction" {:types types-vec :vec vec-expr}))
-                       (let [env' (:env result)
-                             changed (:changed result)
-                             ;; Propagate watchers for all changed paths
-                             env' (if (seq changed)
-                                    (let [watchers (->> changed
-                                                        (mapcat (fn [p]
-                                                                  (let [node (tree/at env' p)]
-                                                                    (:watched-by node))))
-                                                        (distinct)
-                                                        vec)]
-                                      (if (seq watchers)
-                                        (or (bind/propagate env' watchers)
-                                            (throw (ex-info "Contradiction during tuple propagation" {})))
-                                        env'))
-                                    env')]
-                         (or (tree/cd env' my-pos)
-                             (throw (ex-info "tuple: lost position" {:pos my-pos}))))))
+                   (apply-composite-and-propagate
+                    env (tree/position vec-node) (dom/tuple-dom elem-doms) my-pos "tuple")
 
                    ;; Slow path: use narrow for non-primitive types
                    (let [env-root
@@ -895,28 +882,8 @@
 
                  (if (and k-dom v-dom)
                    ;; Fast path: build composite domain + apply-composite-constraint
-                   (let [composite (dom/map-of-dom k-dom v-dom)
-                         target-path (tree/position map-node)
-                         result (bind/apply-composite-constraint (tree/root env) target-path composite)]
-                     (if-not result
-                       (throw (ex-info "map-of: contradiction" {:key-type key-type-expr :val-type val-type-expr :map map-expr}))
-                       (let [env' (:env result)
-                             changed (:changed result)
-                             ;; Propagate watchers for all changed paths
-                             env' (if (seq changed)
-                                    (let [watchers (->> changed
-                                                        (mapcat (fn [p]
-                                                                  (let [node (tree/at env' p)]
-                                                                    (:watched-by node))))
-                                                        (distinct)
-                                                        vec)]
-                                      (if (seq watchers)
-                                        (or (bind/propagate env' watchers)
-                                            (throw (ex-info "Contradiction during map-of propagation" {})))
-                                        env'))
-                                    env')]
-                         (or (tree/cd env' my-pos)
-                             (throw (ex-info "map-of: lost position" {:pos my-pos}))))))
+                   (apply-composite-and-propagate
+                    env (tree/position map-node) (dom/map-of-dom k-dom v-dom) my-pos "map-of")
 
                    ;; Slow path: use narrow for non-primitive value types
                    (let [children (tree/children map-node)

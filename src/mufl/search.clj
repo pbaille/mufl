@@ -56,6 +56,14 @@
 ;; Variable collection — which nodes are candidates for splitting
 ;; ════════════════════════════════════════════════════════════════
 
+(defn- splittable-domain?
+  "Is this a non-singleton, non-void domain that can be split/stepped?"
+  [d]
+  (and d
+       (not (dom/singleton? d))
+       (not (dom/void? d))
+       (dom/steppable? d)))
+
 (defn- collect-splittable
   "Walk direct children of scope-path and collect paths of nodes with
    non-singleton steppable domains (candidates for splitting).
@@ -65,19 +73,15 @@
     (when scope
       (->> (tree/children scope)
            (keep (fn [child]
-                   (let [d (:domain child)]
-                     (when (and d
-                                (not (dom/singleton? d))
-                                (not (dom/void? d))
-                                (dom/steppable? d)
-                                (not (:constraint child))
-                                (not (:primitive child))
-                                (not (:link child))
-                                (not (:vector child))
-                                (not (:map child))
-                                (not (:derived child))
-                                (not (:def-binding child)))
-                       (tree/position child)))))
+                   (when (and (splittable-domain? (:domain child))
+                              (not (:constraint child))
+                              (not (:primitive child))
+                              (not (:link child))
+                              (not (:vector child))
+                              (not (:map child))
+                              (not (:derived child))
+                              (not (:def-binding child)))
+                     (tree/position child))))
            vec))))
 
 (defn- collect-splittable-deps
@@ -103,12 +107,8 @@
                                 (tree/children resolved))
 
                         ;; Non-ground steppable domain — this is a dependency
-                        (let [d (:domain resolved)]
-                          (and d
-                               (not (dom/singleton? d))
-                               (not (dom/void? d))
-                               (dom/steppable? d)
-                               (not (:derived resolved))))
+                        (and (splittable-domain? (:domain resolved))
+                             (not (:derived resolved)))
                         #{rpos}
 
                         ;; Link — follow it explicitly
@@ -257,10 +257,7 @@
         (let [var-path      (pick-split-variable env scope-path)
               ;; Also check if scope itself has a splittable domain
               scope-dom     (:domain scope-node)
-              scope-split?  (and scope-dom
-                                 (not (dom/singleton? scope-dom))
-                                 (not (dom/void? scope-dom))
-                                 (dom/steppable? scope-dom)
+              scope-split?  (and (splittable-domain? scope-dom)
                                  (not (:link scope-node))
                                  (not (:vector scope-node))
                                  (not (:map scope-node)))]

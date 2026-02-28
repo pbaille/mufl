@@ -30,11 +30,6 @@
     (recur p)
     tree))
 
-(defn root?
-  "Is this the root node?"
-  [tree]
-  (nil? (::parent tree)))
-
 (defn position
   "Path from root to here."
   [{::keys [parent name]}]

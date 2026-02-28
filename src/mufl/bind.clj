@@ -7,7 +7,7 @@
    3. All domains are propagated to fixpoint
 
    After every bind, the tree is maximally narrowed."
-  (:refer-clojure :exclude [resolve destructure])
+  (:refer-clojure :exclude [resolve])
   (:require [mufl.tree :as tree]
             [mufl.domain :as dom]))
 
@@ -125,6 +125,50 @@
   "Set of composite domain kinds."
   #{:vector-of :tuple :map-of})
 
+(declare apply-composite-constraint)
+
+(defn- narrow-children
+  "Narrow a sequence of [child elem-dom] pairs against their respective domains.
+   Returns {:env env' :changed [paths...]} or nil on contradiction.
+   Each child is a tree node; elem-dom is the target domain to intersect with."
+  [env child-dom-pairs]
+  (reduce (fn [{:keys [env changed]} [child elem-dom]]
+            (let [resolved-child (resolve child)
+                  child-path (tree/position resolved-child)
+                  child-dom (or (:domain resolved-child) dom/any)
+                  narrowed (dom/intersect child-dom elem-dom)]
+              (cond
+                (dom/void? narrowed)
+                (reduced nil)
+
+                (= narrowed child-dom)
+                ;; No change, but check if child is a collection node
+                ;; and the element domain is composite (nested case)
+                (if (and (composite-kinds (:kind elem-dom))
+                         (or (:vector resolved-child) (:map resolved-child)))
+                  (let [inner-result (apply-composite-constraint env child-path elem-dom)]
+                    (if (nil? inner-result)
+                      (reduced nil)
+                      {:env (:env inner-result)
+                       :changed (into changed (:changed inner-result))}))
+                  {:env env :changed changed})
+
+                :else
+                (let [env' (set-domain env child-path narrowed)
+                      ;; Recurse for nested composites
+                      env' (if (and (composite-kinds (:kind elem-dom))
+                                    (or (:vector resolved-child) (:map resolved-child)))
+                             (let [inner-result (apply-composite-constraint env' child-path elem-dom)]
+                               (if (nil? inner-result)
+                                 (reduced nil)
+                                 (:env inner-result)))
+                             env')]
+                  (if (reduced? env')
+                    env' ;; propagate reduced nil
+                    {:env env' :changed (conj changed child-path)})))))
+          {:env env :changed []}
+          child-dom-pairs))
+
 (defn apply-composite-constraint
   "Apply a composite domain's structural constraints to a collection node.
    Returns {:env env' :changed [paths...]} or nil on contradiction.
@@ -133,8 +177,7 @@
    For :tuple — checks length, intersects each position's domain.
    For :map-of — validates keys, intersects each value's domain."
   [env target-path composite-dom]
-  (let [target-node (resolve-at env target-path)
-        target-resolved-path (tree/position target-node)]
+  (let [target-node (resolve-at env target-path)]
     (case (:kind composite-dom)
 
       :vector-of
@@ -144,42 +187,7 @@
                                 (filter #(integer? (::tree/name %))
                                         (tree/children target-node)))
               elem-dom (:element composite-dom)]
-          (reduce (fn [{:keys [env changed]} child]
-                    (let [resolved-child (resolve child)
-                          child-path (tree/position resolved-child)
-                          child-dom (or (:domain resolved-child) dom/any)
-                          narrowed (dom/intersect child-dom elem-dom)]
-                      (cond
-                        (dom/void? narrowed)
-                        (reduced nil)
-
-                        (= narrowed child-dom)
-                        ;; No change, but check if child is a collection node
-                        ;; and the element domain is composite (nested case)
-                        (if (and (composite-kinds (:kind elem-dom))
-                                 (or (:vector resolved-child) (:map resolved-child)))
-                          (let [inner-result (apply-composite-constraint env child-path elem-dom)]
-                            (if (nil? inner-result)
-                              (reduced nil)
-                              {:env (:env inner-result)
-                               :changed (into changed (:changed inner-result))}))
-                          {:env env :changed changed})
-
-                        :else
-                        (let [env' (set-domain env child-path narrowed)
-                              ;; Recurse for nested composites
-                              env' (if (and (composite-kinds (:kind elem-dom))
-                                            (or (:vector resolved-child) (:map resolved-child)))
-                                     (let [inner-result (apply-composite-constraint env' child-path elem-dom)]
-                                       (if (nil? inner-result)
-                                         (reduced nil)
-                                         (:env inner-result)))
-                                     env')]
-                          (if (reduced? env')
-                            env' ;; propagate reduced nil
-                            {:env env' :changed (conj changed child-path)})))))
-                  {:env env :changed []}
-                  children)))
+          (narrow-children env (map (fn [c] [c elem-dom]) children))))
 
       :tuple
       (if-not (:vector target-node)
@@ -192,40 +200,7 @@
               expected (count elem-doms)]
           (if (not= n expected)
             nil ;; contradiction: length mismatch
-            (reduce (fn [{:keys [env changed]} [idx elem-dom]]
-                      (let [child (nth children idx)
-                            resolved-child (resolve child)
-                            child-path (tree/position resolved-child)
-                            child-dom (or (:domain resolved-child) dom/any)
-                            narrowed (dom/intersect child-dom elem-dom)]
-                        (cond
-                          (dom/void? narrowed)
-                          (reduced nil)
-
-                          (= narrowed child-dom)
-                          (if (and (composite-kinds (:kind elem-dom))
-                                   (or (:vector resolved-child) (:map resolved-child)))
-                            (let [inner-result (apply-composite-constraint env child-path elem-dom)]
-                              (if (nil? inner-result)
-                                (reduced nil)
-                                {:env (:env inner-result)
-                                 :changed (into changed (:changed inner-result))}))
-                            {:env env :changed changed})
-
-                          :else
-                          (let [env' (set-domain env child-path narrowed)
-                                env' (if (and (composite-kinds (:kind elem-dom))
-                                              (or (:vector resolved-child) (:map resolved-child)))
-                                       (let [inner-result (apply-composite-constraint env' child-path elem-dom)]
-                                         (if (nil? inner-result)
-                                           (reduced nil)
-                                           (:env inner-result)))
-                                       env')]
-                            (if (reduced? env')
-                              env'
-                              {:env env' :changed (conj changed child-path)})))))
-                    {:env env :changed []}
-                    (map-indexed vector elem-doms)))))
+            (narrow-children env (map vector children elem-doms)))))
 
       :map-of
       (if-not (:map target-node)
@@ -235,43 +210,10 @@
               val-dom (:value composite-dom)]
           ;; Validate keys
           (if (some (fn [child]
-                      (let [k (::tree/name child)]
-                        (not (dom/contains-val? key-dom k))))
+                      (not (dom/contains-val? key-dom (::tree/name child))))
                     children)
             nil ;; contradiction: key doesn't match
-            (reduce (fn [{:keys [env changed]} child]
-                      (let [resolved-child (resolve child)
-                            child-path (tree/position resolved-child)
-                            child-dom (or (:domain resolved-child) dom/any)
-                            narrowed (dom/intersect child-dom val-dom)]
-                        (cond
-                          (dom/void? narrowed)
-                          (reduced nil)
-
-                          (= narrowed child-dom)
-                          (if (and (composite-kinds (:kind val-dom))
-                                   (or (:vector resolved-child) (:map resolved-child)))
-                            (let [inner-result (apply-composite-constraint env child-path val-dom)]
-                              (if (nil? inner-result)
-                                (reduced nil)
-                                {:env (:env inner-result)
-                                 :changed (into changed (:changed inner-result))}))
-                            {:env env :changed changed})
-
-                          :else
-                          (let [env' (set-domain env child-path narrowed)
-                                env' (if (and (composite-kinds (:kind val-dom))
-                                              (or (:vector resolved-child) (:map resolved-child)))
-                                       (let [inner-result (apply-composite-constraint env' child-path val-dom)]
-                                         (if (nil? inner-result)
-                                           (reduced nil)
-                                           (:env inner-result)))
-                                       env')]
-                            (if (reduced? env')
-                              env'
-                              {:env env' :changed (conj changed child-path)})))))
-                    {:env env :changed []}
-                    children))))
+            (narrow-children env (map (fn [c] [c val-dom]) children)))))
 
       ;; Unknown composite kind — no-op
       {:env env :changed []})))
@@ -507,22 +449,6 @@
 ;; Propagation engine
 ;; ════════════════════════════════════════════════════════════════
 
-(defn- collect-constraints
-  "Find all constraint nodes under the ::constraints subtree of the given scope."
-  ([env]
-   (collect-constraints env []))
-  ([env scope-path]
-   (let [root (tree/root env)
-         constraints-path (conj (vec scope-path) ::constraints)
-         constraints-node (tree/cd root constraints-path)]
-     (if constraints-node
-       (->> (tree/children constraints-node)
-            (keep (fn [child]
-                    (when (:constraint child)
-                      (tree/position child))))
-            vec)
-       []))))
-
 (defn propagate
   "Run all constraints in pending set to fixpoint.
    Returns updated env (rooted), or nil on contradiction."
@@ -602,16 +528,6 @@
     [(partition 2 (butlast xs)) (last xs)]
     [(partition 2 xs) nil]))
 
-(defn resolve-to-path
-  "Given an expression that refers to a name, resolve it to its path in the tree."
-  [env expr]
-  (cond
-    (symbol? expr)
-    (when-let [found (tree/find env [expr])]
-      (tree/position (resolve found)))
-
-    :else nil))
-
 (declare bind)
 (declare apply-domain-constraint)
 (declare bind-pattern)
@@ -686,29 +602,6 @@
      (if result
        (or (tree/cd result return-to) result)
        (throw (ex-info "Contradiction detected" {:op op :paths paths}))))))
-
-(defn destructure
-  "Destructure a pattern against an expression.
-   
-   Creates a seed binding for the expression, extracts its domain,
-   then calls bind-pattern which handles maps, vectors, and operator
-   dispatch with domain propagation to every bound symbol.
-   
-   Returns the env with all bindings established."
-  [env pattern expr]
-  (cond
-    (symbol? pattern)
-    (bind env pattern expr)
-
-    (or (map? pattern) (vector? pattern) (seq? pattern))
-    (let [seed-sym (gensym "seed_")
-          env' (bind env seed-sym expr)
-          seed-domain (domain-of env' [seed-sym])
-          [env'' _bound-syms] (bind-pattern env' pattern seed-sym seed-domain)]
-      env'')
-
-    :else
-    (throw (ex-info "Invalid destructuring pattern" {:pattern pattern}))))
 
 (defn bind-relational
   "Bind a relational constraint like (< x y).

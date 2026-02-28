@@ -15,21 +15,22 @@
 ;; DFS search engine (built on search/grounded? + search/split)
 ;; ════════════════════════════════════════════════════════════════
 
-(defn- search-all
-  "DFS over the tree: yield all ground leaves, splitting at every branch."
-  [env scope-path]
+(defn- search-dfs
+  "DFS over the tree: yield all ground leaves, splitting at every branch.
+   extract-fn is called on each validated ground tree: (extract-fn env scope-path)."
+  [env scope-path extract-fn]
   (cond
     (nil? env)                             []
     (search/grounded? env scope-path)
     ;; Re-run all constraints to catch stale backward-only propagation.
     ;; validate-ground returns nil if any constraint is violated.
     (if-let [valid (search/validate-ground env scope-path)]
-      [(search/extract-value valid scope-path)]
+      [(extract-fn valid scope-path)]
       [])
     :else
     (if-let [[left right] (search/split env scope-path)]
-      (concat (search-all left  scope-path)
-              (search-all right scope-path))
+      (concat (search-dfs left  scope-path extract-fn)
+              (search-dfs right scope-path extract-fn))
       [])))   ;; split returned nil → dead end (void or unsplittable)
 
 (defn query*
@@ -58,7 +59,7 @@
 
       ;; DFS search
       :else
-      (vec (search-all env ws-path)))))
+      (vec (search-dfs env ws-path search/extract-value)))))
 
 (defmacro query
   "Query macro: bind the expression, solve, extract results.
@@ -73,21 +74,6 @@
                (first body)
                (cons 'do body))]
     `(query* '~expr)))
-
-(defn- search-all-bindings
-  "DFS over the tree, extracting full binding maps from each ground leaf."
-  [env scope-path]
-  (cond
-    (nil? env)                             []
-    (search/grounded? env scope-path)
-    (if-let [valid (search/validate-ground env scope-path)]
-      [(search/extract-bindings valid scope-path)]
-      [])
-    :else
-    (if-let [[left right] (search/split env scope-path)]
-      (concat (search-all-bindings left  scope-path)
-              (search-all-bindings right scope-path))
-      [])))
 
 (defn query+*
   "Functional query+: bind the expression, solve, extract full environments.
@@ -111,7 +97,7 @@
       []
 
       :else
-      (vec (search-all-bindings env ws-path)))))
+      (vec (search-dfs env ws-path search/extract-bindings)))))
 
 (defmacro query+
   "Query+ macro: bind the expression, solve, return full environments.
