@@ -1,5 +1,5 @@
 (ns mufl.bind-destructuring-test
-  "Tests for destructuring operators implemented via :bind protocol.
+  "Tests for destructuring operators implemented via :destruct protocol.
    ks, as, or (pattern), and domain destructuring."
   (:require [clojure.test :refer [deftest testing is]]
             [mufl.core :as m]))
@@ -56,7 +56,7 @@
            (m/query (let [(or (ks x) [x]) {:x 42}] x))))))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Constructor destructuring through defn :bind
+;; Constructor destructuring through defn :construct
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest domain-destructuring

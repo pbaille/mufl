@@ -69,7 +69,7 @@
                    rest
                    (conj changed path))))))))
 
-(defn narrow-lt
+(defn- narrow-lt
   "Narrow for a < b constraint."
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
@@ -83,13 +83,13 @@
         (apply-narrowings env [[a-path a-new] [b-path b-new]]))
       {:env env :changed []})))
 
-(defn narrow-gt
+(defn- narrow-gt
   "Narrow for a > b constraint."
   [env [a-path b-path]]
   ;; a > b is the same as b < a
   (narrow-lt env [b-path a-path]))
 
-(defn narrow-lte
+(defn- narrow-lte
   "Narrow for a <= b."
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
@@ -103,12 +103,12 @@
         (apply-narrowings env [[a-path a-new] [b-path b-new]]))
       {:env env :changed []})))
 
-(defn narrow-gte
+(defn- narrow-gte
   "Narrow for a >= b."
   [env [a-path b-path]]
   (narrow-lte env [b-path a-path]))
 
-(def ^:private composite-kinds
+(def composite-kinds
   "Set of composite domain kinds."
   #{:vector-of :tuple :map-of})
 
@@ -205,7 +205,7 @@
       ;; Unknown composite kind — no-op
       {:env env :changed []})))
 
-(defn narrow-eq
+(defn- narrow-eq
   "Narrow for a = b (unification). Both domains must intersect.
    When one side has a composite domain (vector-of, tuple, map-of) and
    the other side is a collection node, applies the composite domain's
@@ -236,7 +236,7 @@
           nil
           (apply-narrowings env [[a-path shared] [b-path shared]]))))))
 
-(defn narrow-neq
+(defn- narrow-neq
   "Narrow for a != b. Only narrows when one side is singleton."
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
@@ -253,7 +253,7 @@
       :else
       {:env env :changed []})))
 
-(defn narrow-plus
+(defn- narrow-plus
   "Narrow for a + b = c constraint. refs = [a-path b-path c-path]"
   [env [a-path b-path c-path]]
   (let [a-dom (domain-of env a-path)
@@ -274,7 +274,7 @@
         (apply-narrowings env [[a-path a-new] [b-path b-new] [c-path c-new]]))
       {:env env :changed []})))
 
-(defn narrow-times
+(defn- narrow-times
   "Narrow for a * b = c constraint."
   [env [a-path b-path c-path]]
   (let [a-dom (domain-of env a-path)
@@ -303,7 +303,7 @@
       :else
       {:env env :changed []})))
 
-(defn narrow-minus
+(defn- narrow-minus
   "Narrow for a - b = c constraint."
   [env [a-path b-path c-path]]
   ;; a - b = c  ⟺  a = c + b  ⟺  c = a - b  ⟺  b = a - c
@@ -322,7 +322,7 @@
         (apply-narrowings env [[a-path a-new] [b-path b-new] [c-path c-new]]))
       {:env env :changed []})))
 
-(defn narrow-mod
+(defn- narrow-mod
   "Narrow for (mod a b) = c constraint."
   [env [a-path b-path c-path]]
   (let [a-dom (domain-of env a-path)
@@ -344,7 +344,7 @@
         (apply-narrowings env [[a-path a-new] [b-path b-new] [c-path c-new]]))
       {:env env :changed []})))
 
-(defn narrow-quot
+(defn- narrow-quot
   "Narrow for (quot a b) = c constraint."
   [env [a-path b-path c-path]]
   (let [a-dom (domain-of env a-path)
@@ -391,7 +391,7 @@
      {:env env :changed [] :any-change false}
      singletons)))
 
-(defn narrow-alldiff
+(defn- narrow-alldiff
   "Narrow for all-different constraint. Repeats until no progress."
   [env refs]
   (loop [env env
@@ -402,7 +402,7 @@
         (not (:any-change result)) {:env (:env result) :changed all-changed}
         :else (recur (:env result) (into all-changed (:changed result)))))))
 
-(defn narrow-abs
+(defn- narrow-abs
   "Narrow for |a| = c constraint. refs = [a-path c-path]"
   [env [a-path c-path]]
   (let [a-dom (domain-of env a-path)

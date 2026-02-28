@@ -11,9 +11,8 @@
 (defn- lazy-ensure-node-abs []
   @(requiring-resolve 'mufl.bind/ensure-node-abs))
 
-(def ^:private composite-kinds
-  "Set of composite domain kinds."
-  #{:vector-of :tuple :map-of})
+;; Re-use the canonical definition from narrow
+(def ^:private composite-kinds narrow/composite-kinds)
 
 (defn resolve-schema-from-tree
   "Interpret a bound tree node as a domain schema.
@@ -30,7 +29,7 @@
     (and (:link node) (:map node))
     (let [linked-node (narrow/resolve (tree/at node (:link node)))
           linked-schema (resolve-schema-from-tree linked-node)
-          local-children (clojure.core/filter #(keyword? (::tree/name %)) (tree/children node))
+          local-children (filter #(keyword? (::tree/name %)) (tree/children node))
           local-fields (into {} (map (fn [child]
                                        [(::tree/name child)
                                         (resolve-schema-from-tree (narrow/resolve child))])
@@ -48,7 +47,7 @@
 
     ;; Map node → structural map schema
     (:map node)
-    (let [children (clojure.core/filter #(keyword? (::tree/name %)) (tree/children node))
+    (let [children (filter #(keyword? (::tree/name %)) (tree/children node))
           fields (into {} (map (fn [child]
                                  [(::tree/name child)
                                   (resolve-schema-from-tree (narrow/resolve child))])
@@ -58,7 +57,7 @@
     ;; Vector node → tuple schema
     (:vector node)
     (let [children (sort-by ::tree/name
-                            (clojure.core/filter #(integer? (::tree/name %)) (tree/children node)))
+                            (filter #(integer? (::tree/name %)) (tree/children node)))
           elem-schemas (mapv #(resolve-schema-from-tree (narrow/resolve %)) children)]
       (if (every? #(= :type-constraint (:kind %)) elem-schemas)
         {:kind :type-constraint
@@ -242,7 +241,7 @@
                                     {:path target-path})))
                   (let [target-resolved-path (tree/position target-node)
                         children (sort-by ::tree/name
-                                          (clojure.core/filter #(integer? (::tree/name %))
+                                          (filter #(integer? (::tree/name %))
                                                                (tree/children target-node)))
                         elem-schema (:element-schema schema)]
                     (reduce (fn [env-root child]
@@ -261,7 +260,7 @@
                                     {:path target-path})))
                   (let [target-resolved-path (tree/position target-node)
                         children (sort-by ::tree/name
-                                          (clojure.core/filter #(integer? (::tree/name %))
+                                          (filter #(integer? (::tree/name %))
                                                                (tree/children target-node)))
                         elem-schemas (:element-schemas schema)
                         n (count children)

@@ -9,9 +9,9 @@
    After every bind, the tree is maximally narrowed.
 
    This namespace re-exports public API from:
-   - mufl.narrow  (resolve, domain-of, set-domain, propagate, narrowing-fns, etc.)
-   - mufl.schema  (resolve-schema-from-tree, resolve-domain-schema, apply-domain-constraint)
-   - mufl.pattern (bind-pattern, bind-pattern-map, domain-node, fn-destruct, substitute-expr)"
+   - mufl.narrow  (resolve, domain-of, set-domain, propagate, apply-composite-constraint)
+   - mufl.schema  (resolve-domain-schema, apply-domain-constraint)
+   - mufl.pattern (bind-pattern, bind-pattern-map, domain-node)"
   (:refer-clojure :exclude [resolve])
   (:require [mufl.tree :as tree]
             [mufl.domain :as dom]
@@ -27,7 +27,6 @@
 (def resolve-at narrow/resolve-at)
 (def domain-of narrow/domain-of)
 (def set-domain narrow/set-domain)
-(def narrowing-fns narrow/narrowing-fns)
 (def propagate narrow/propagate)
 (def apply-composite-constraint narrow/apply-composite-constraint)
 
@@ -35,7 +34,6 @@
 ;; Re-exports from mufl.schema
 ;; ════════════════════════════════════════════════════════════════
 
-(def resolve-schema-from-tree schema/resolve-schema-from-tree)
 (def resolve-domain-schema schema/resolve-domain-schema)
 (def apply-domain-constraint schema/apply-domain-constraint)
 
@@ -46,8 +44,6 @@
 (def bind-pattern pattern/bind-pattern)
 (def bind-pattern-map pattern/bind-pattern-map)
 (def domain-node pattern/domain-node)
-(def fn-destruct pattern/fn-destruct)
-(def substitute-expr pattern/substitute-expr)
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Recursion depth tracking
@@ -109,7 +105,7 @@
 
 (declare bind)
 
-(defn ensure-node
+(defn- ensure-node
   "Ensure an expression is bound as a node in the tree, returning [env' path].
    - Symbols: resolve to existing node's path
    - Literals: create an anonymous child node with singleton domain

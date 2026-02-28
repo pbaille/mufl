@@ -249,9 +249,9 @@
                 (throw (ex-info "Cannot resolve vector for tail positionals"
                                 {:pattern pattern :seed seed-sym})))
             children (sort-by ::tree/name
-                              (clojure.core/filter #(integer? (::tree/name %))
-                                                   (tree/children seed-node)))
-            total (clojure.core/count children)
+                              (filter #(integer? (::tree/name %))
+                                      (tree/children seed-node)))
+            total (count children)
             head-count (count positional)
             tail-count (count tail-positionals)
             _ (when (> (+ head-count tail-count) total)
@@ -278,7 +278,7 @@
              (map-indexed vector tail-positionals))
             ;; Build middle slice as vector of nth expressions
             middle-exprs (mapv (fn [i] (list 'nth seed-sym i))
-                               (clojure.core/range middle-start middle-end))
+                               (range middle-start middle-end))
             rest-dom (if (= :vector-of (:kind seed-domain))
                        seed-domain
                        dom/any)]

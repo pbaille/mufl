@@ -5,7 +5,6 @@
    - :construct  — expression-position (forward bind)
    - :destruct   — pattern-position (backward destructuring)
    - :type-domain — type identity domain
-   - :show       — tree→code serialization (optional)
 
    Built-in: one-of, let, and, =, !=, <, >, <=, >=, +, -, *, distinct, etc."
   (:require [mufl.tree :as tree]
@@ -23,8 +22,6 @@
    - :construct  — expression-position evaluation (forward direction)
    - :destruct   — pattern-position evaluation (backward direction)
    - :type-domain — the type domain this operator represents
-   - :show       — (optional) tree→code serialization for show.clj
-   - :type-constructor — flag for composite type constructors (vector-of, tuple, map-of)
 
    All operators get :primitive true automatically."
   [env name fields]
@@ -34,9 +31,7 @@
 (defn defops
   "Register multiple operators. specs is a seq of [name fields-map] pairs."
   [env specs]
-  (reduce (fn [e [name fields]]
-            (-> (tree/ensure-path e [name])
-                (tree/put [name] (assoc fields :primitive true))))
+  (reduce (fn [e [name fields]] (defop e name fields))
           env specs))
 
 (defn- apply-composite-and-propagate
@@ -692,8 +687,7 @@
       ;; In defdomain: (defdomain IntVec (vector-of integer))
       ;; Walks vector children, intersecting each with the type domain.
       (defop 'vector-of
-        {:type-constructor true
-         :construct
+        {:construct
          (fn [env args]
            (let [;; Determine arity:
                  ;; Nullary: invalid
@@ -767,8 +761,7 @@
       ;; where element 0 is integer, element 1 is string, element 2 is boolean.
       ;; In defdomain: (defdomain Point (tuple [number number]))
       (defop 'tuple
-        {:type-constructor true
-         :construct
+        {:construct
          (fn [env args]
            (let [_ (when (< (count args) 1)
                      (throw (ex-info "tuple requires at least 1 argument" {:args args})))
@@ -844,8 +837,7 @@
       ;; all values must be integers.
       ;; In defdomain: (defdomain Scores (map-of keyword integer))
       (defop 'map-of
-        {:type-constructor true
-         :construct
+        {:construct
          (fn [env args]
            (let [_ (when (< (count args) 2)
                      (throw (ex-info "map-of requires at least 2 arguments: (map-of key-type val-type [map])"
