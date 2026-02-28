@@ -1,5 +1,13 @@
 # Design: Lazy Enumeration & Infinite Domains
 
+> **⚠️ HISTORICAL DOCUMENT**
+>
+> This design doc describes the original architecture that led to `SearchState`, `solve-step`, and choice-point stacks. **The actual implementation has been simplified** and now lives in `search.clj`, using a stack-based DFS with three primitives: `grounded?`, `split`, and `validate-ground`.
+>
+> The current search is: `DFS: simplify → loop { nil?→skip | grounded?→validate→yield | else→split+recurse }`
+>
+> This document is preserved for historical context and architectural reasoning, but the `SearchState` record, `solve-step` function, and explicit choice-point management described below were **replaced** by a simpler approach.
+
 ## The Idea
 
 mufl's domains are sets — sometimes finite, sometimes infinite. Today the solver only enumerates finite domains (`members` returns a set, we iterate it). Infinite domains (`type`, `vector-of`, `tuple`, `map-of`) are opaque to the solver — it can propagate constraints through them but can't produce solutions from them.
@@ -300,6 +308,8 @@ Over-approximate: `c ∈ [min(a.lo*b.lo, a.lo*b.hi, a.hi*b.lo, a.hi*b.hi) .. max
 
 ### Search state
 
+> **Note:** The actual implementation uses a simpler stack-based DFS in `search.clj` instead of explicit choice-point records.
+
 The search state captures the solver's position in the search tree. It's a stack of **choice points**:
 
 ```clojure
@@ -316,6 +326,8 @@ Each choice point says: "we chose a value for this variable; the `remaining-doma
 This is just the explicit representation of what backtracking search does implicitly via the call stack. Making it explicit = making it serializable, pausable, resumable.
 
 ### Implementation sketch
+
+> **Note:** The actual implementation replaced `solve-step` with a simpler DFS using `grounded?`, `split`, and `validate-ground` primitives.
 
 ```clojure
 (defn solve-step
@@ -368,6 +380,8 @@ This is just the explicit representation of what backtracking search does implic
 ```
 
 ### `query1` implementation
+
+> **Note:** The `SearchState` record was not implemented. The actual system uses `search.clj` with a stack-based approach.
 
 ```clojure
 (defrecord SearchState [scope-path choice-points])
@@ -472,6 +486,8 @@ Add to `domain.clj`:
 Tests: step produces correct values and remainders, exhaustion returns nil.
 
 ### Phase 3: `solve-step` + `query1`
+
+> **Note:** This phase was not implemented as described. Instead, `solve.clj` was deleted and replaced with `search.clj`, which uses a simpler stack-based DFS without `solve-step`, `backtrack`, or `SearchState`.
 
 Add `solve-step` and `backtrack` to `solve.clj`.
 Add `query1*` and `query1` macro to `core.clj`.

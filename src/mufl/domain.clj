@@ -986,6 +986,58 @@
            (boolean (get kind-step (:kind d))))))
 
 ;; ════════════════════════════════════════════════════════════════
+;; Domain splitting (for binary search)
+;; ════════════════════════════════════════════════════════════════
+
+(defn split
+  "Bisect domain d into [left right] where left ∪ right = d, both non-empty.
+   Returns nil if d is void or singleton (can't split further).
+   Used by the search engine for binary tree splitting."
+  [d]
+  (case (:kind d)
+    :void nil
+    :single nil  ;; already ground
+
+    :finite
+    (let [sorted (sort (:values d))
+          n      (count sorted)
+          mid    (quot n 2)
+          left   (set (take mid sorted))
+          right  (set (drop mid sorted))]
+      [(finite left) (finite right)])
+
+    :range
+    (let [{:keys [lo hi]} d]
+      (cond
+        ;; Bounded: split at midpoint
+        ;; Use lo + quot(hi-lo, 2) to avoid negative overflow with quot
+        (and lo hi)
+        (let [mid (+ lo (quot (- hi lo) 2))]
+          [(range-dom lo mid) (range-dom (inc mid) hi)])
+
+        ;; lo-bounded only: pick a split point
+        lo
+        [(range-dom lo (+ lo 100)) (range-dom (+ lo 101) nil)]
+
+        ;; hi-bounded only: pick a split point
+        hi
+        [(range-dom (- hi 100) hi) (range-dom nil (dec (- hi 100)))]
+
+        ;; Fully unbounded: split around zero
+        :else
+        [(range-dom nil 0) (range-dom 1 nil)]))
+
+    ;; Spiral: treat like unbounded integers
+    :spiral [(range-dom nil 0) (range-dom 1 nil)]
+
+    ;; Boolean type: split into the two values
+    :type (when (= :boolean (:type d))
+            [(single true) (single false)])
+
+    ;; Anything else (composite, any, etc.) — not splittable here
+    nil))
+
+;; ════════════════════════════════════════════════════════════════
 ;; Arithmetic on domains
 ;; ════════════════════════════════════════════════════════════════
 

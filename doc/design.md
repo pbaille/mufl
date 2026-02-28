@@ -47,8 +47,8 @@ User expression
        │ (when concrete answers needed)
        ▼
   ┌────────────┐
-  │  solve     │  search / enumerate
-  │            │  forks on non-singleton domains
+  │  search    │  grounded? + split DFS
+  │            │  binary bisection on domains
   └────────────┘
        │
        ▼
@@ -442,30 +442,32 @@ Then `(= ... 6)` unifies the sum with `(single 6)`:
 
 The return expression. Creates a vector node whose children link to x and y.
 
-### Step 6: solve
+### Step 6: search
 
-At this point, the tree is at fixpoint but x and y still have non-singleton domains. To get concrete answers, `solve` forks:
+At this point, the tree is at fixpoint but x and y still have non-singleton domains. To get concrete answers, `search` explores via DFS with binary domain bisection:
 
-- Try x=1 → y must be 5 (from + constraint) → solution [1 5]
-- Try x=2 → y must be 4 → solution [2 4]
+1. Check if tree is grounded (all value nodes have singleton domains) → no
+2. Pick variable with smallest domain (fail-first heuristic) → x has domain {1 2}
+3. Call `dom/split` to bisect x's domain → {1} and {2}
+4. Fork left: set x={1}, propagate → y must be 5 → validate-ground confirms → yield [1 5]
+5. Fork right: set x={2}, propagate → y must be 4 → validate-ground confirms → yield [2 4]
 
 Result: `([1 5] [2 4])`
 
-## Solve Phase
+## Search Phase
 
-Solve is the operation that enumerates concrete solutions from a propagated tree. It:
+Search is the operation that enumerates concrete solutions from a propagated tree via depth-first exploration with binary domain bisection:
 
-1. Finds all non-singleton domain nodes in the scope
-2. Picks one (heuristic: smallest domain first)
-3. For each value in its domain:
-   a. Creates a branch (copy of the tree)
-   b. Sets the node's domain to `(single value)`
-   c. Propagates to fixpoint
-   d. If contradiction → discard branch
-   e. If all domains singleton → found a solution
-   f. If non-singleton domains remain → recurse (pick next variable)
+1. **Base case: grounded?** — Check if all value-bearing nodes at the scope path have singleton domains. If yes, run `validate-ground` (re-runs all constraints to catch stale propagation), then yield the solution.
+2. **Recursive case: split** — Pick variable with smallest domain (fail-first heuristic). Call `dom/split` to bisect the domain into two halves. For each half:
+   a. Narrow the variable's domain to the half
+   b. Propagate to fixpoint
+   c. If contradiction → prune this branch
+   d. Otherwise → recurse
 
-This is the standard constraint-solving search. It can reuse `logic.engine`'s search machinery, or be implemented directly on the tree. The key point: **solve is separate from bind**. Bind is deterministic propagation. Solve is nondeterministic search.
+This is simpler than traditional CSP search: no explicit choice-points or backtracking state. Each recursion is a pure function call over an immutable tree. The DFS queue manages the exploration frontier.
+
+The key point: **search is separate from bind**. Bind is deterministic propagation. Search is nondeterministic exploration. Different search strategies (DFS, BFS, best-first) differ only in queue management — they all use the same `grounded?` and `split` primitives.
 
 ## What About `if`?
 
@@ -554,25 +556,27 @@ Reuses immucode.tree's core ideas:
 2. **`mufl.tree`** — Tree navigation: cd, parent, root, find, put, ensure-path, position, at
 3. **`mufl.bind`** — Core bind + propagation engine
 4. **`mufl.env`** — Base environment: one-of, let, and, =, <, >, +, -
-5. **`mufl.core`** — `query` entry point (bind + solve)
-6. **Tests** — End-to-end: `(query (let [x (one-of 1 2 3)] (and (> x 1) x)))` → `(2 3)`
+5. **`mufl.search`** — Search strategies: grounded?, split, validate-ground, DFS/BFS
+6. **`mufl.show`** — Tree → mufl code serialization (extract-value, extract-bindings, print-solution)
+7. **`mufl.core`** — `query` entry point (bind + search)
+8. **Tests** — End-to-end: `(query (let [x (one-of 1 2 3)] (and (> x 1) x)))` → `(2 3)`
 
 ### Phase 2: Full Form Coverage
-7. All relational constraints: !=, <=, >=, distinct
-8. All arithmetic: *, /, mod
-9. or, if, when, cond
-10. Collections: vector, hash-map, keyword access
-11. Destructuring: ks, as, or, &, quote, list
-12. HOFs: map, reduce
-13. defc (function definitions as tree nodes)
+9. All relational constraints: !=, <=, >=, distinct
+10. All arithmetic: *, /, mod
+11. or, if, when, cond
+12. Collections: vector, hash-map, keyword access
+13. Destructuring: ks, as, or, &, quote, list
+14. HOFs: map, reduce
+15. defc (function definitions as tree nodes)
 
 ### Phase 3: Domains
-14. defdomain macro
-15. Domain-as-constraint
-16. Domain-as-destructuring
-17. Domain composition
+16. defdomain macro
+17. Domain-as-constraint
+18. Domain-as-destructuring
+19. Domain composition
 
 ### Phase 4: Optimization & Types
-18. maximize / minimize
-19. Type transitions for builtins
-20. Cross-scope type propagation
+20. maximize / minimize
+21. Type transitions for builtins
+22. Cross-scope type propagation

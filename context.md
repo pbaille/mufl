@@ -8,6 +8,14 @@
 
 ### Source Code
 - **src/** — Main source directory (Clojure code)
+  - **mufl/** — Core implementation modules:
+    - `tree.clj` — Immutable tree data structure with zipper navigation
+    - `domain.clj` — Domain representations (ranges, finite sets, types) and operations
+    - `bind.clj` — Binding semantics, constraint propagation, and resolution
+    - `search.clj` — Search primitives: `grounded?`, `split`, `validate-ground`
+    - `env.clj` — Query execution: `query`, `query-lazy`, `query1` (DFS over search trees)
+    - `core.clj` — User-facing API and primitive constructors
+    - `show.clj` — Pretty-printing for trees and values
 - **test/** — Test directory (Clojure tests)
 
 ### Documentation

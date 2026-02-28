@@ -46,7 +46,7 @@ When `y` is bound to `x`, `y` gets a snapshot of `x`'s domain that immediately g
 
 **Assessment: 🔶 Defer unification, but document the contract clearly**
 
-`or` does bind-time domain union (fast, imprecise). `if`/`cond` do solve-time fork expansion (slow, precise). This is actually a reasonable architecture: `or` is the fast-path approximation, `if`/`cond` is the precise path. The problem isn't the duality — it's that the relationship isn't explicit.
+`or` does bind-time domain union (fast, imprecise). `if`/`cond` do search-time fork expansion (slow, precise). This is actually a reasonable architecture: `or` is the fast-path approximation, `if`/`cond` is the precise path. The problem isn't the duality — it's that the relationship isn't explicit.
 
 **Compounding risk:** MEDIUM. Phase 3's `defdomain` will need disjunction for type unions (e.g., `(defdomain Shape (or Circle Rect))`). If this creates forks, it's precise but potentially very slow. If it uses `or`-style union, it's fast but lossy. We need to decide which, and the current ad-hoc split makes that decision harder.
 
@@ -85,7 +85,7 @@ Unlike `abs` which creates a narrowing constraint, `min`/`max` just compute the 
 
 **Assessment: 🔴 Fundamental limitation — needs design thought before Phase 3**
 
-The fork-at-solve-time approach for `if` means recursive function bodies can't fully evaluate. A recursive function like `(fn [n] (if (= n 0) 1 (* n (self (- n 1)))))` can't work because:
+The fork-at-search-time approach for `if` means recursive function bodies can't fully evaluate. A recursive function like `(fn [n] (if (= n 0) 1 (* n (self (- n 1)))))` can't work because:
 1. `if` stores a fork, doesn't evaluate branches at bind time
 2. The recursive call would need to create nested forks ad infinitum
 3. There's no termination detection
@@ -115,11 +115,11 @@ Extra args silently dropped, too few args give confusing "Unresolved symbol" err
 
 **Assessment: 🟢 Fix now — improves robustness**
 
-`collect-non-ground` uses name-pattern matching (`derived-name?` checking for "expr"/"lit"/"call" prefixes) to skip intermediate nodes. A `:derived true` flag on the node itself is more robust.
+`pick-split-variable` uses name-pattern matching (`derived-name?` checking for "expr"/"lit"/"call" prefixes) to skip intermediate nodes. A `:derived true` flag on the node itself is more robust.
 
 **Compounding risk:** LOW, but the current approach breaks if naming conventions change or if user-defined names happen to start with "expr"/"lit"/"call".
 
-**Recommendation:** FIX NOW. Add `:derived true` in `ensure-node`, check it in `collect-non-ground`. Cost: 5 lines.
+**Recommendation:** FIX NOW. Add `:derived true` in `ensure-node`, check it in `pick-split-variable`. Cost: 5 lines.
 
 ---
 
@@ -163,7 +163,7 @@ Items 1-3 are Phase 2 completion work. Item 4 is Issue #1 (root-level constraint
 
 ### Verdict: **Hybrid — targeted hardening, then proceed**
 
-The foundations are sound. The core bind-propagate-solve pipeline is correct, well-tested, and conceptually clean. The tree-as-single-source-of-truth principle works. The domain algebra is solid.
+The foundations are sound. The core bind-propagate-search pipeline is correct, well-tested, and conceptually clean. The tree-as-single-source-of-truth principle works. The domain algebra is solid.
 
 **We should NOT refound.** The architecture doesn't have fundamental flaws — it has structural debt in two specific areas (constraint scoping, recursion) that would compound. A targeted hardening phase addresses these without losing momentum.
 
@@ -187,7 +187,7 @@ Minimal fixes that improve code quality immediately:
 
 3. **Mark derived nodes with `:derived true`** (H-5)
    - Set `:derived true` in `ensure-node` for literal and expression nodes
-   - Replace `derived-name?` in `collect-non-ground` with `(:derived child)`
+   - Replace `derived-name?` in `pick-split-variable` with `(:derived child)`
 
 4. **DRY up relational constraint wrappers** (QUALITY-5)
    - Replace 6 identical `defprim` calls with a `doseq`
@@ -230,7 +230,7 @@ Design and implement bounded recursion for user-defined functions.
 ;; 3. If no: unroll up to N levels, then return domain approximation
 ```
 
-This handles the common case (recursive functions called with ground values during solve) while avoiding infinite unrolling for symbolic recursion.
+This handles the common case (recursive functions called with ground values during search) while avoiding infinite unrolling for symbolic recursion.
 
 **Implementation:**
 - Detect recursion: track the call stack during fn application (push fn name, check before calling)
@@ -294,7 +294,7 @@ With scoped constraints and recursion in place:
    (defdomain IntList (or nil {:head integer :tail IntList}))
    ```
 
-### Phase 4: Optimization & Solver Intelligence (future)
+### Phase 4: Optimization & Search Intelligence (future)
 
 1. **maximize/minimize** — objective functions over constraint solutions
 2. **Smarter `or`** — optionally precise (fork-based) when cardinality is small
@@ -336,7 +336,7 @@ Before the next session, do these (30 minutes total):
   [env' [anon]])
 ;; → need to set :derived on the node
 
-;; In solve.clj, collect-non-ground:
+;; In search.clj, pick-split-variable:
 ;; Replace (not (derived-name? child-name)) with (not (:derived child))
 ```
 
@@ -365,7 +365,7 @@ Before the next session, do these (30 minutes total):
 
 ## 6. Confidence Assessment
 
-**Foundation health: 8/10.** The core pipeline (bind → propagate → solve) is correct and well-tested. The domain algebra is solid. The tree navigation works. The two load-bearing issues (constraint scoping, recursion) are real but bounded — they're not architectural rot, they're missing features.
+**Foundation health: 8/10.** The core pipeline (bind → propagate → search) is correct and well-tested. The domain algebra is solid. The tree navigation works. The two load-bearing issues (constraint scoping, recursion) are real but bounded — they're not architectural rot, they're missing features.
 
 **Path confidence: HIGH for hybrid approach.** Continuing without hardening would create a debugging nightmare in Phase 3. Refounding would be wasteful — the architecture is right, it just needs two targeted improvements. The hybrid path (quick wins → targeted hardening → complete Phase 2 → Phase 3) is the lowest-risk highest-progress option.
 

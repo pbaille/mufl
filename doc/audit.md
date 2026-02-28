@@ -1,32 +1,32 @@
 # Audit: mufl Phases 1 & 2 — Edge Cases, Quality, Hindsight
 
 **Date:** 2026-02-24  
-**Scope:** All source files (domain.clj, tree.clj, bind.clj, env.clj, solve.clj, core.clj)  
+**Scope:** All source files (domain.clj, tree.clj, bind.clj, env.clj, search.clj, core.clj)  
 **Tests:** 128 tests, 208 assertions, all passing
 
 ---
 
 ## 1. Bugs Found & Fixed
 
-### BUG-1: Solve labels intermediate expression nodes (CRITICAL)
+### BUG-1: Search labels intermediate expression nodes (CRITICAL)
 
-**File:** `solve.clj` — `collect-non-ground`  
+**File:** `search.clj` — `pick-split-variable` (formerly `collect-non-ground`)  
 **Severity:** Critical — produces incorrect solutions  
 **Status:** ✅ Fixed
 
-**Problem:** When expressions like `(abs (- q1 q3))` are evaluated, they create anonymous intermediate nodes (named `expr1234`, `lit5678`) in the workspace scope. These nodes have non-singleton domains and `collect-non-ground` included them as candidates for labeling during search.
+**Problem:** When expressions like `(abs (- q1 q3))` are evaluated, they create anonymous intermediate nodes (named `expr1234`, `lit5678`) in the workspace scope. These nodes have non-singleton domains and `pick-split-variable` included them as candidates for labeling during search.
 
-When `solve` picked an intermediate node (e.g., the `(- q1 q3)` result) and labeled it before the source variables, it could assign a value that constrains the source variables in a way that satisfies the arithmetic constraint but violates other constraints (like `distinct`). The arithmetic constraint propagation would narrow `q1` and `q3` to be consistent with the chosen diff value, but because those variables hadn't been individually assigned yet, invalid combinations slipped through.
+When search picked an intermediate node (e.g., the `(- q1 q3)` result) and labeled it before the source variables, it could assign a value that constrains the source variables in a way that satisfies the arithmetic constraint but violates other constraints (like `distinct`). The arithmetic constraint propagation would narrow `q1` and `q3` to be consistent with the chosen diff value, but because those variables hadn't been individually assigned yet, invalid combinations slipped through.
 
 **Example:** 4-queens puzzle returned 6 solutions (4 invalid) instead of 2. Invalid results like `[4 1 4 2]` appeared where `q1=q3=4` violating `distinct`.
 
-**Fix:** Added `derived-name?` predicate to skip nodes with gensym-generated names (`expr*`, `lit*`, `call*`) in `collect-non-ground`. These nodes derive their ground values from constraint propagation when their source variables are labeled, not from independent enumeration.
+**Fix:** Added `derived-name?` predicate to skip nodes with gensym-generated names (`expr*`, `lit*`, `call*`) in `pick-split-variable`. These nodes derive their ground values from constraint propagation when their source variables are labeled, not from independent enumeration.
 
 **Root cause analysis:** The design treats derived computation nodes the same as user-defined variables in the tree. A cleaner separation (e.g., a `:derived` flag set during `bind-arithmetic`) would be more robust than name-pattern matching, but the gensym approach works because all intermediate nodes use predictable prefixes.
 
 ### BUG-2: `if` with boolean literal test crashes (MODERATE)
 
-**File:** `solve.clj` — `expand-fork`  
+**File:** `search.clj` — `expand-fork`  
 **Severity:** Moderate — crashes on valid input  
 **Status:** ✅ Fixed
 
@@ -51,7 +51,7 @@ Also handled `true`/`false` as literal tests in `cond` branches.
 
 **Why this is OK:** Bound consistency is sound (never misses valid solutions) but incomplete (may include invalid ones). This is standard in constraint programming. The `if`/`cond` mechanism uses fork-based expansion which IS precise. For precise disjunctions, users should use `if`/`cond` instead of `or`.
 
-**Potential future fix:** Implement `or` as a fork (like `if`/`cond`) during solve rather than as a bind-time domain union. This would be slower but precise.
+**Potential future fix:** Implement `or` as a fork (like `if`/`cond`) during search rather than as a bind-time domain union. This would be slower but precise.
 
 ### LIMIT-2: `not` only handles relational ops
 
@@ -201,11 +201,11 @@ The tree conflates two concerns: lexical scoping (name → domain) and constrain
 
 ### H-4: Unified disjunction model
 
-**Current:** Three mechanisms: `or` (bind-time domain union), `if`/`cond` (solve-time fork expansion).  
+**Current:** Three mechanisms: `or` (bind-time domain union), `if`/`cond` (search-time fork expansion).  
 **Better:** One `fork` mechanism used by all disjunctions.
 
-`or` should store branches as forks (like `if`/`cond`) and let solve enumerate them. This would be:
-- Slower (more branching in solve) but
+`or` should store branches as forks (like `if`/`cond`) and let search enumerate them. This would be:
+- Slower (more branching in search) but
 - Correct (no overapproximation from domain union)
 - Simpler (one code path)
 
@@ -243,7 +243,7 @@ Since every `cd` already knows the path it's navigating to, it could store the f
 1. Domain edge cases (empty, inverted range, nil, negative range)
 2. Bind edge cases (shadowing, nested scopes, literals in constraints, empty forms)
 3. Propagation edge cases (circular, long chains, cascading neq, transitivity)
-4. Solve edge cases (no solutions, ground, cartesian product)
+4. Search edge cases (no solutions, ground, cartesian product)
 5. if/cond/or edge cases (boolean literals, nested, correlations)
 6. fn edge cases (higher-order, closures, wrong arity, multi-call)
 7. min/max edge cases (same values, no inverse)
@@ -264,7 +264,7 @@ Since every `cd` already knows the path it's navigating to, it could store the f
 
 | Priority | Item | Effort | Impact |
 |----------|------|--------|--------|
-| P0 | ✅ BUG-1: Fix solve intermediate node labeling | Done | Critical correctness |
+| P0 | ✅ BUG-1: Fix search intermediate node labeling | Done | Critical correctness |
 | P0 | ✅ BUG-2: Fix if with boolean literal test | Done | Usability |
 | P1 | H-5: Mark derived nodes with `:derived` flag | Low | Robustness |
 | P1 | H-1: Remove `:domain` from link nodes | Low | Clarity |

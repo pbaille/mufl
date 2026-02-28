@@ -71,7 +71,7 @@ For finite domains, `query-lazy` produces the same solutions as `query` (as a la
 
 ## query1 — one solution at a time
 
-`query1` returns a pair `[value search-state]` or `nil` if no solution exists. The search state captures the solver's position — pass it back to `query1*` to get the next solution.
+`query1` returns a pair `[value search-state]` or `nil` if no solution exists. The search state captures the remaining search stack — pass it back to `query1*` to get the next solution.
 
 ```clojure
 (let [[v state] (query1 (let [x (one-of 1 2 3)] x))]
@@ -178,7 +178,7 @@ step(#{3})      → [3, void]
 
 There's no separate iterator or stream abstraction. The domain *is* the state. `step` extracts a value and returns a smaller domain. When the domain is exhausted, `step` returns `nil`.
 
-This is what lets `query-lazy` work without special runtime machinery — the solver just steps domains, one value at a time, building solutions lazily.
+This is what lets `query-lazy` work without special runtime machinery — the search walks the tree depth-first, splitting domains one value at a time, building solutions lazily.
 
 ---
 
