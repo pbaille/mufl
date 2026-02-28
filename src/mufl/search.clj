@@ -32,8 +32,7 @@
          ;; ground if all its children are singleton.)
          (:vector node)
          (every? #(grounded? env (tree/position %) seen')
-                 (filter #(integer? (::tree/name %))
-                         (tree/children node)))
+                 (tree/int-children node))
 
          ;; Map — groundedness determined by children, not type-domain
          (:map node)
@@ -313,9 +312,7 @@
         (cond
           ;; Vector node — recursively extract indexed children
           (:vector resolved)
-          (let [children (sort-by ::tree/name
-                                  (filter #(integer? (::tree/name %))
-                                          (tree/children resolved)))]
+          (let [children (tree/int-children resolved)]
             (mapv (fn [child]
                     (extract-value env (tree/position child)))
                   children))

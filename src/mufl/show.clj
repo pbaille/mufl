@@ -39,19 +39,6 @@
 ;; Helpers
 ;; ════════════════════════════════════════════════════════════════
 
-(defn- sorted-int-children
-  "Get sorted integer-keyed children of a vector node."
-  [node]
-  (sort-by ::tree/name
-           (filter #(integer? (::tree/name %))
-                   (tree/children node))))
-
-(defn- keyword-children
-  "Get keyword-keyed children of a map node."
-  [node]
-  (filter #(keyword? (::tree/name %))
-          (tree/children node)))
-
 ;; ════════════════════════════════════════════════════════════════
 ;; Leaf collection (for sharing/constraint detection)
 ;; ════════════════════════════════════════════════════════════════
@@ -71,14 +58,14 @@
                      (collect-leaves env c
                                     (conj output-pos (::tree/name c))
                                     (conj visited rpath)))
-                   (sorted-int-children resolved)))
+                   (tree/int-children resolved)))
 
       (:map resolved)
       (vec (mapcat (fn [c]
                      (collect-leaves env c
                                     (conj output-pos (::tree/name c))
                                     (conj visited rpath)))
-                   (keyword-children resolved)))
+                   (tree/kw-children resolved)))
 
       (and d (dom/singleton? d)) []
 
@@ -269,11 +256,11 @@
         d (:domain resolved)]
     (cond
       (:vector resolved)
-      (mapv #(show-bare env %) (sorted-int-children resolved))
+      (mapv #(show-bare env %) (tree/int-children resolved))
 
       (:map resolved)
       (into {} (map (fn [c] [(::tree/name c) (show-bare env c)]))
-            (keyword-children resolved))
+            (tree/kw-children resolved))
 
       (:fork resolved)
       (show-fork (:fork resolved))
@@ -305,12 +292,12 @@
 
       ;; Vector
       (:vector resolved)
-      (mapv #(show-with-names env % names) (sorted-int-children resolved))
+      (mapv #(show-with-names env % names) (tree/int-children resolved))
 
       ;; Map
       (:map resolved)
       (into {} (map (fn [c] [(::tree/name c) (show-with-names env c names)]))
-            (keyword-children resolved))
+            (tree/kw-children resolved))
 
       ;; Fork
       (:fork resolved)

@@ -170,18 +170,14 @@
       :vector-of
       (if-not (:vector target-node)
         nil ;; contradiction: composite domain on non-vector
-        (let [children (sort-by ::tree/name
-                                (filter #(integer? (::tree/name %))
-                                        (tree/children target-node)))
+        (let [children (tree/int-children target-node)
               elem-dom (:element composite-dom)]
           (narrow-children env (map (fn [c] [c elem-dom]) children))))
 
       :tuple
       (if-not (:vector target-node)
         nil ;; contradiction: tuple on non-vector
-        (let [children (sort-by ::tree/name
-                                (filter #(integer? (::tree/name %))
-                                        (tree/children target-node)))
+        (let [children (tree/int-children target-node)
               elem-doms (:elements composite-dom)
               n (count children)
               expected (count elem-doms)]

@@ -248,9 +248,7 @@
             _ (when-not (and seed-node (:vector seed-node))
                 (throw (ex-info "Cannot resolve vector for tail positionals"
                                 {:pattern pattern :seed seed-sym})))
-            children (sort-by ::tree/name
-                              (filter #(integer? (::tree/name %))
-                                      (tree/children seed-node)))
+            children (tree/int-children seed-node)
             total (count children)
             head-count (count positional)
             tail-count (count tail-positionals)

@@ -33,7 +33,7 @@
     (and (:link node) (:map node))
     (let [linked-node (narrow/resolve (tree/at node (:link node)))
           linked-domain (resolve-schema-from-tree linked-node)
-          local-children (filter #(keyword? (::tree/name %)) (tree/children node))
+          local-children (tree/kw-children node)
           local-fields (into {} (map (fn [child]
                                        [(::tree/name child)
                                         (resolve-schema-from-tree (narrow/resolve child))])
@@ -50,7 +50,7 @@
 
     ;; Map node → structural map-fields domain
     (:map node)
-    (let [children (filter #(keyword? (::tree/name %)) (tree/children node))
+    (let [children (tree/kw-children node)
           fields (into {} (map (fn [child]
                                  [(::tree/name child)
                                   (resolve-schema-from-tree (narrow/resolve child))])
@@ -59,8 +59,7 @@
 
     ;; Vector node → tuple domain
     (:vector node)
-    (let [children (sort-by ::tree/name
-                            (filter #(integer? (::tree/name %)) (tree/children node)))
+    (let [children (tree/int-children node)
           elem-domains (mapv #(resolve-schema-from-tree (narrow/resolve %)) children)]
       (dom/tuple-dom elem-domains))
 

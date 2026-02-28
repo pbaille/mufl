@@ -97,6 +97,23 @@
           (keys node))))
 
 ;; ════════════════════════════════════════════════════════════════
+;; Typed child accessors
+;; ════════════════════════════════════════════════════════════════
+
+(defn int-children
+  "Sorted integer-keyed children of a vector node."
+  [node]
+  (sort-by ::name
+           (filter #(integer? (::name %))
+                   (children node))))
+
+(defn kw-children
+  "Keyword-keyed children of a map node."
+  [node]
+  (filter #(keyword? (::name %))
+          (children node)))
+
+;; ════════════════════════════════════════════════════════════════
 ;; Display
 ;; ════════════════════════════════════════════════════════════════
 
