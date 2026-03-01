@@ -1,6 +1,7 @@
 (ns mufl.domain-test
   (:require [clojure.test :refer [deftest testing is]]
-            [mufl.domain :as d]))
+            [mufl.domain :as d]
+            [mufl.core :as m]))
 
 (deftest construction
   (testing "single"
@@ -353,3 +354,132 @@
           (is (= expected-flip r2)
               (str "relate symmetry: " (pr-str a) " vs " (pr-str b)
                    " → " r1 " but reverse → " r2))))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; Domain edge cases (from edge_cases_test section 1)
+;; ════════════════════════════════════════════════════════════════
+
+(deftest empty-one-of
+  (testing "(one-of) — empty domain returns no solutions"
+    (is (= [] (m/query (let [x (one-of)] x))))))
+
+(deftest inverted-between
+  (testing "(between 5 3) — inverted between returns no solutions"
+    (is (= [] (m/query (let [x (between 5 3)] x))))))
+
+(deftest single-nil-domain
+  (testing "nil as a domain value"
+    (is (= [nil] (m/query nil)))
+    (is (= [nil] (m/query (let [x nil] x))))))
+
+(deftest single-element-between
+  (testing "(between 3 3) — single element between"
+    (is (= [3] (m/query (let [x (between 3 3)] x))))))
+
+(deftest large-domain-performance
+  (testing "(between 1 100) with constraints doesn't blow up"
+    (let [results (m/query (let [x (between 1 100)]
+                             (and (> x 95) x)))]
+      (is (= [96 97 98 99 100] results)))))
+
+(deftest domain-with-negative-between
+  (testing "(between -3 3) includes negatives and zero"
+    (is (= [-3 -2 -1 0 1 2 3]
+           (m/query (let [x (between -3 3)] x))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; Domain algebra edge cases (from edge_cases_test section 17)
+;; ════════════════════════════════════════════════════════════════
+
+(deftest domain-operations-on-void
+  (testing "algebra with void"
+    (is (= d/void (d/intersect d/void d/any)))
+    (is (= d/void (d/intersect d/void d/void)))
+    (is (= d/any (d/unite d/any d/void)))
+    (is (= d/void (d/subtract d/void (d/single 1))))))
+
+(deftest domain-operations-identity
+  (testing "intersect with self"
+    (let [d (d/finite #{1 2 3})]
+      (is (= d (d/intersect d d)))))
+  (testing "unite with self"
+    (let [d (d/finite #{1 2 3})]
+      (is (= d (d/unite d d))))))
+
+(deftest domain-operations-single
+  (testing "single contains-val?"
+    (is (d/contains-val? (d/single 42) 42))
+    (is (not (d/contains-val? (d/single 42) 43))))
+  (testing "single nil"
+    (is (d/singleton? (d/single nil)))
+    (is (= nil (d/singleton-val (d/single nil))))))
+
+(deftest domain-mod-div-edge-cases
+  (testing "mod with zero in domain is handled"
+    (is (= #{0 1} (d/members (d/domain-mod (d/finite #{3 4}) (d/finite #{0 3}))))))
+  (testing "div with zero in domain is handled"
+    (is (= #{1} (d/members (d/domain-div (d/finite #{3 4}) (d/finite #{0 3})))))))
+
+(deftest domain-arithmetic-with-void
+  (testing "arithmetic on void domains"
+    (is (= d/void (d/domain-add d/void (d/finite #{1 2}))))
+    (is (= d/void (d/domain-sub (d/finite #{1}) d/void)))))
+
+(deftest domain-void-members
+  (testing "void has empty member set"
+    (is (= #{} (d/members d/void)))
+    (is (= 0 (d/size d/void)))))
+
+(deftest domain-any-members
+  (testing "any has nil members (open domain)"
+    (is (nil? (d/members d/any)))
+    (is (nil? (d/size d/any)))
+    (is (not (d/finite? d/any)))))
+
+(deftest domain-finite-normalization
+  (testing "finite with one element normalizes to single"
+    (is (d/singleton? (d/finite #{42})))
+    (is (= 42 (d/singleton-val (d/finite #{42})))))
+  (testing "finite with zero elements normalizes to void"
+    (is (d/void? (d/finite #{})))))
+
+(deftest domain-contains-val-edge
+  (testing "contains-val? on various domains"
+    (is (d/contains-val? d/any 42))
+    (is (not (d/contains-val? d/void 42)))
+    (is (d/contains-val? (d/finite #{1 2 3}) 2))
+    (is (not (d/contains-val? (d/finite #{1 2 3}) 4)))))
+
+(deftest domain-ordered-ops-with-non-numeric
+  (testing "domain-min/max return nil for non-numeric domains"
+    (is (nil? (d/domain-min (d/finite #{:a :b :c}))))
+    (is (nil? (d/domain-max (d/finite #{:a :b :c})))))
+  (testing "domain-below/above with mixed types filter correctly"
+    (let [d (d/finite #{1 2 :a 3})]
+      ;; domain-below only keeps numbers < v
+      (is (= #{1 2} (d/members (d/domain-below d 3)))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; Boolean and keyword domains (from edge_cases_test section 18)
+;; ════════════════════════════════════════════════════════════════
+
+(deftest keyword-domain
+  (testing "keyword as domain value"
+    (is (= [:a] (m/query :a)))
+    (is (= #{:red :blue :green}
+           (set (m/query (let [c (one-of :red :blue :green)] c)))))))
+
+(deftest boolean-domain
+  (testing "boolean as domain value"
+    (is (= [true] (m/query true)))
+    (is (= [false] (m/query false)))))
+
+;; ════════════════════════════════════════════════════════════════
+;; Between domain (from phase2_test)
+;; ════════════════════════════════════════════════════════════════
+
+(deftest between-domain
+  (testing "integer between"
+    (is (= [1 2 3 4 5] (m/query (let [x (between 1 5)] x)))))
+  (testing "between with constraint"
+    (is (= [8 9 10] (m/query (let [x (between 1 10)] (and (> x 7) x)))))))
