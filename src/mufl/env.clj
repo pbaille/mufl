@@ -13,7 +13,7 @@
             [mufl.schema :as schema]))
 
 ;; ════════════════════════════════════════════════════════════════
-;; Base environment construction
+;; Operator registration primitives
 ;; ════════════════════════════════════════════════════════════════
 
 (defn defop
@@ -35,6 +35,9 @@
   (reduce (fn [e [name fields]] (defop e name fields))
           env specs))
 
+;; ════════════════════════════════════════════════════════════════
+;; Helper functions for operator implementations
+;; ════════════════════════════════════════════════════════════════
 
 (defn- filter-pred-bind
   "Build a :construct fn for a domain-filter predicate (even?, odd?, pos?, neg?, zero?)."
@@ -100,10 +103,16 @@
 ;; This is the single canonical path: source expression → schema map.
 ;; No separate resolve-type-expr / resolve-type-schema needed.
 
-(defn base-env
-  "Build the base environment with all built-in forms."
-  []
-  (-> {}
+;; ════════════════════════════════════════════════════════════════
+;; Registration groups
+;; ════════════════════════════════════════════════════════════════
+
+;; ── Core forms ────────────────────────────────────────────────
+
+(defn- register-core-forms
+  "Register core language forms: one-of, let, fresh, and, do, or, not, if, when, cond, fn."
+  [env]
+  (-> env
 
       ;; ── one-of: create a finite domain ──────────────────────
       (defop 'one-of
@@ -194,60 +203,6 @@
                        result))
                    env args))})
 
-      ;; ── Relational constraints ──────────────────────────────
-
-      (defops (for [[sym op] [['< :<] ['> :>] ['<= :<=] ['>= :>=] ['= :=] ['!= :!=]]]
-                  [sym {:construct (fn [env args] (bind/bind-relational env op args))}]))
-
-      ;; ── Arithmetic ──────────────────────────────────────────
-
-      (defop '+
-        {:construct (fn [env args]
-                 (bind/bind-arithmetic env :+ args))})
-
-      (defop '-
-        {:construct (fn [env args]
-                 (bind/bind-arithmetic env :- args))})
-
-      (defop '*
-        {:construct (fn [env args]
-                 (bind/bind-arithmetic env :* args))})
-
-      ;; ── distinct (all-different) ────────────────────────────
-      (defop 'distinct
-        {:construct
-         (fn [env [vec-expr]]
-           ;; vec-expr should be a vector literal of symbols
-           (let [my-pos (tree/position env)
-                 paths (mapv (fn [sym]
-                               (let [p (when (symbol? sym)
-                                         (when-let [found (tree/find env [sym])]
-                                           (tree/position (bind/resolve found))))]
-                                 (when-not p
-                                   (throw (ex-info (str "Cannot resolve in distinct: " sym)
-                                                   {:sym sym})))
-                                 p))
-                             vec-expr)
-                 env-root (bind/add-constraint (tree/root env) :alldiff paths my-pos)]
-             (or (and env-root (tree/cd env-root my-pos))
-                 (throw (ex-info "Contradiction in distinct" {:args vec-expr})))))})
-
-      ;; ── mod / quot ──────────────────────────────────────────
-
-      (defop 'mod
-        {:construct (fn [env args]
-                 (bind/bind-arithmetic env :mod args))})
-
-      (defop 'quot
-        {:construct (fn [env args]
-                 (bind/bind-arithmetic env :quot args))})
-
-      ;; ── between: integer range domain ──────────────────────
-      (defop 'between
-        {:construct
-         (fn [env [lo hi]]
-           (assoc env :domain (dom/int-range lo hi)))})
-
       ;; ── do: sequence of expressions, return last ────────────
       (defop 'do
         {:construct
@@ -337,7 +292,7 @@
                       all-paths)]
                  (or (tree/cd env-root pos) env-root)))))})
 
-;; ── not: constraint negation ────────────────────────────
+      ;; ── not: constraint negation ────────────────────────────
       ;; (not (= x y)) → (!= x y), etc.
       (defop 'not
         {:construct
@@ -431,16 +386,6 @@
                :else
                (assoc env :fork {:kind :cond :branches branches}))))})
 
-      ;; ── Filter predicates: even, odd, pos, neg, zero ───────
-      ;; Each narrows a domain by filtering with a Clojure predicate.
-      ;; No ? suffix — these are constraints, not boolean predicates.
-      (defops (for [[sym pred-fn label] [['even even? "even"]
-                                            ['odd odd? "odd"]
-                                            ['pos pos? "positive"]
-                                            ['neg neg? "negative"]
-                                            ['zero zero? "zero"]]]
-                  [sym {:construct (filter-pred-bind pred-fn label)}]))
-
       ;; ── fn: multi-branch function ─────────────────────────────
       ;; Single branch:  (fn [params] body-expr)
       ;; Multi-branch:   (fn [p1] expr1 [p2] expr2 ...)
@@ -474,11 +419,50 @@
                             :else
                             (throw (ex-info "Unexpected form in fn body — expected vector (branch) or single default expression"
                                             {:form (first forms) :remaining (vec forms)}))))]
-             (assoc env :mufl-fn parsed)))})
+             (assoc env :mufl-fn parsed)))})))
 
-      ;; ── apply / function call ───────────────────────────────
-      ;; Not a named primitive — handled in bind dispatch for list forms
-      ;; when head resolves to a node with :mufl-fn
+;; ── Relational operators ──────────────────────────────────────
+
+(defn- register-relational
+  "Register relational constraints: <, >, <=, >=, =, !=."
+  [env]
+  (defops env (for [[sym op] [['< :<] ['> :>] ['<= :<=] ['>= :>=] ['= :=] ['!= :!=]]]
+                [sym {:construct (fn [env args] (bind/bind-relational env op args))}])))
+
+;; ── Arithmetic operators ──────────────────────────────────────
+
+(defn- register-arithmetic
+  "Register arithmetic operators: +, -, *, mod, quot, between, abs, min, max."
+  [env]
+  (-> env
+
+      (defop '+
+        {:construct (fn [env args]
+                      (bind/bind-arithmetic env :+ args))})
+
+      (defop '-
+        {:construct (fn [env args]
+                      (bind/bind-arithmetic env :- args))})
+
+      (defop '*
+        {:construct (fn [env args]
+                      (bind/bind-arithmetic env :* args))})
+
+      ;; ── mod / quot ──────────────────────────────────────────
+
+      (defop 'mod
+        {:construct (fn [env args]
+                      (bind/bind-arithmetic env :mod args))})
+
+      (defop 'quot
+        {:construct (fn [env args]
+                      (bind/bind-arithmetic env :quot args))})
+
+      ;; ── between: integer range domain ──────────────────────
+      (defop 'between
+        {:construct
+         (fn [env [lo hi]]
+           (assoc env :domain (dom/int-range lo hi)))})
 
       ;; ── abs: absolute value ─────────────────────────────────
       ;; Implemented as a constraint: |a| = c
@@ -525,49 +509,14 @@
                                                    (max a b))))]
                  (assoc (or (tree/cd (tree/root env'') (tree/position env)) env'')
                         :domain result-dom))
-               (assoc env :domain dom/any))))})
+               (assoc env :domain dom/any))))})))
 
-      ;; ── get: map key access ─────────────────────────────────
-      ;; (get m :key) navigates to the :key child of map node m.
-      ;; Creates a link so constraints propagate back to the child.
-      (defop 'get
-        {:construct
-         (fn [env [coll-expr key-expr]]
-           (let [[_ coll-node] (bind/resolve-collection env coll-expr :map "get")
-                 _ (when-not (keyword? key-expr)
-                     (throw (ex-info "get: key must be a literal keyword"
-                                     {:key key-expr})))
-                 coll-path (tree/position coll-node)
-                 child-path (conj coll-path key-expr)
-                 child (tree/cd (tree/root env) child-path)]
-             (when-not child
-               (throw (ex-info (str "get: key not found: " key-expr)
-                               {:key key-expr :coll coll-expr})))
-             ;; Link current node to the child for constraint propagation
-             (let [target (bind/resolve child)
-                   target-path (tree/position target)]
-               (assoc env :link target-path))))})
+;; ── Type system operators ─────────────────────────────────────
 
-      ;; ── nth: vector index access ────────────────────────────
-      ;; (nth v i) navigates to the ith child of vector node v.
-      ;; Creates a link so constraints propagate back to the child.
-      (defop 'nth
-        {:construct
-         (fn [env [vec-expr idx-expr]]
-           (let [[_ vec-node] (bind/resolve-collection env vec-expr :vector "nth")
-                 _ (when-not (integer? idx-expr)
-                     (throw (ex-info "nth: index must be a literal integer"
-                                     {:idx idx-expr})))
-                 vec-path (tree/position vec-node)
-                 child-path (conj vec-path idx-expr)
-                 child (tree/cd (tree/root env) child-path)]
-             (when-not child
-               (throw (ex-info (str "nth: index out of bounds: " idx-expr)
-                               {:idx idx-expr :vec vec-expr})))
-             ;; Link current node to the child for constraint propagation
-             (let [target (bind/resolve child)
-                   target-path (tree/position target)]
-               (assoc env :link target-path))))})
+(defn- register-type-system
+  "Register type domain primitives and structural type constructors."
+  [env]
+  (-> env
 
       ;; ── Type domain primitives ─────────────────────────────
       ;; string, integer, number, keyword, boolean resolve to type domains.
@@ -581,13 +530,13 @@
       ;;   (let [x integer] ...) → x is a fresh integer variable
       ;;   (let [s string] ...)  → s is a fresh string variable
       (defops (for [[sym type-dom label] [['string  dom/string-dom  "string"]
-                                             ['integer dom/integer-dom "integer"]
-                                             ['number  dom/number-dom  "number"]
-                                             ['keyword dom/keyword-dom "keyword"]
-                                             ['boolean dom/boolean-dom "boolean"]]]
-                  [sym {:construct (type-domain-bind type-dom label)
-                        :type-domain type-dom
-                        :destruct (type-domain-destruct type-dom label)}]))
+                                          ['integer dom/integer-dom "integer"]
+                                          ['number  dom/number-dom  "number"]
+                                          ['keyword dom/keyword-dom "keyword"]
+                                          ['boolean dom/boolean-dom "boolean"]]]
+                [sym {:construct (type-domain-bind type-dom label)
+                      :type-domain type-dom
+                      :destruct (type-domain-destruct type-dom label)}]))
 
       ;; ── free: unconstrained variable ────────────────────────
       ;; (let [x free] ...) creates a variable with no type constraint.
@@ -666,7 +615,14 @@
         {:construct
          (fn [env [target-expr template-expr]]
            (let [schema (bind/resolve-domain-schema env template-expr)]
-             (bind/apply-domain-constraint env schema [target-expr])))})
+             (bind/apply-domain-constraint env schema [target-expr])))})))
+
+;; ── Definition forms ──────────────────────────────────────────
+
+(defn- register-definitions
+  "Register def and defn forms."
+  [env]
+  (-> env
 
       ;; ── def: named definition ────────────────────────────────
       ;; (def Person {:name string :age integer})   → just a named value
@@ -696,17 +652,86 @@
       (defop 'defn
         {:construct
          (fn [env [cname params & body]]
-           (bind/bind env (list 'def cname (list* 'fn params body))))})
+           (bind/bind env (list 'def cname (list* 'fn params body))))})))
 
       ;; defdomain and defc are removed.
       ;; Use `def` for domain schemas, `defn` for constructors/constraints.
+
+;; ── Collection operators ──────────────────────────────────────
+
+(defn- register-collections
+  "Register collection operators: get, nth, count, map, filter, reduce, drop, dissoc, distinct,
+   first, rest, take, concat, select-keys, merge, update."
+  [env]
+  (-> env
+
+      ;; ── distinct (all-different) ────────────────────────────
+      (defop 'distinct
+        {:construct
+         (fn [env [vec-expr]]
+           ;; vec-expr should be a vector literal of symbols
+           (let [my-pos (tree/position env)
+                 paths (mapv (fn [sym]
+                               (let [p (when (symbol? sym)
+                                         (when-let [found (tree/find env [sym])]
+                                           (tree/position (bind/resolve found))))]
+                                 (when-not p
+                                   (throw (ex-info (str "Cannot resolve in distinct: " sym)
+                                                   {:sym sym})))
+                                 p))
+                             vec-expr)
+                 env-root (bind/add-constraint (tree/root env) :alldiff paths my-pos)]
+             (or (and env-root (tree/cd env-root my-pos))
+                 (throw (ex-info "Contradiction in distinct" {:args vec-expr})))))})
+
+      ;; ── get: map key access ─────────────────────────────────
+      ;; (get m :key) navigates to the :key child of map node m.
+      ;; Creates a link so constraints propagate back to the child.
+      (defop 'get
+        {:construct
+         (fn [env [coll-expr key-expr]]
+           (let [[env coll-node] (bind/resolve-collection env coll-expr :map "get")
+                 _ (when-not (keyword? key-expr)
+                     (throw (ex-info "get: key must be a literal keyword"
+                                     {:key key-expr})))
+                 coll-path (tree/position coll-node)
+                 child-path (conj coll-path key-expr)
+                 child (tree/cd (tree/root env) child-path)]
+             (when-not child
+               (throw (ex-info (str "get: key not found: " key-expr)
+                               {:key key-expr :coll coll-expr})))
+             ;; Link current node to the child for constraint propagation
+             (let [target (bind/resolve child)
+                   target-path (tree/position target)]
+               (assoc env :link target-path))))})
+
+      ;; ── nth: vector index access ────────────────────────────
+      ;; (nth v i) navigates to the ith child of vector node v.
+      ;; Creates a link so constraints propagate back to the child.
+      (defop 'nth
+        {:construct
+         (fn [env [vec-expr idx-expr]]
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "nth")
+                 _ (when-not (integer? idx-expr)
+                     (throw (ex-info "nth: index must be a literal integer"
+                                     {:idx idx-expr})))
+                 vec-path (tree/position vec-node)
+                 child-path (conj vec-path idx-expr)
+                 child (tree/cd (tree/root env) child-path)]
+             (when-not child
+               (throw (ex-info (str "nth: index out of bounds: " idx-expr)
+                               {:idx idx-expr :vec vec-expr})))
+             ;; Link current node to the child for constraint propagation
+             (let [target (bind/resolve child)
+                   target-path (tree/position target)]
+               (assoc env :link target-path))))})
 
       ;; ── count: collection length ────────────────────────────
       ;; (count v) returns the number of elements in a vector or map.
       (defop 'count
         {:construct
          (fn [env [coll-expr]]
-           (let [[_ coll-node] (bind/resolve-to-node env coll-expr "count")
+           (let [[env coll-node] (bind/resolve-to-node env coll-expr "count")
                  n (cond
                      (:vector coll-node)
                      (count (tree/int-children coll-node))
@@ -730,7 +755,7 @@
                  f-sym (gensym "mapfn__")
                  env (bind/bind env f-sym f-expr)
                  ;; Resolve the collection (use the original coll-expr for lookup)
-                 [_ coll-node] (bind/resolve-collection env coll-expr :vector "map")]
+                 [env coll-node] (bind/resolve-collection env coll-expr :vector "map")]
              ;; Build a vector expression: [(f e0) (f e1) ...]
              ;; where each ei is (nth coll-expr i)
              (let [children (tree/int-children coll-node)
@@ -753,7 +778,7 @@
                  pred-sym (gensym "filtfn__")
                  env (bind/bind env pred-sym pred-expr)
                  ;; Resolve the collection
-                 [_ coll-node] (bind/resolve-collection env coll-expr :vector "filter")
+                 [env coll-node] (bind/resolve-collection env coll-expr :vector "filter")
                  children (tree/int-children coll-node)
                  n (count children)]
              ;; For each element, try applying the predicate.
@@ -781,7 +806,7 @@
                  f-sym (gensym "redfn__")
                  env (bind/bind env f-sym f-expr)
                  ;; Resolve the collection
-                 [_ coll-node] (bind/resolve-collection env coll-expr :vector "reduce")
+                 [env coll-node] (bind/resolve-collection env coll-expr :vector "reduce")
                  children (tree/int-children coll-node)
                  n (count children)]
              ;; Unroll: (f (f (f init e0) e1) e2)
@@ -791,6 +816,375 @@
                            init-expr
                            (range n))]
                (bind/bind env folded))))})
+
+      ;; ── drop: sub-vector from index N onward ───────────────
+      ;; (drop n v) → new vector containing elements from index n to end.
+      ;; Generalized rest: (drop 1 v) gives elements from index 1 onward.
+      ;; n must be a literal integer. Builds [(nth v n) (nth v n+1) ...].
+      (defop 'drop
+        {:construct
+         (fn [env [n-expr vec-expr]]
+           (let [_ (when-not (integer? n-expr)
+                     (throw (ex-info "drop: first arg must be a literal integer"
+                                     {:n n-expr})))
+                 ;; Resolve the vector
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "drop")
+                 children (tree/int-children vec-node)
+                 total (count children)]
+             (if (<= total n-expr)
+               ;; Nothing left — return empty vector
+               (assoc env :vector true)
+               ;; Build rest vector: [(nth vec n) (nth vec n+1) ...]
+               (let [rest-exprs (mapv (fn [i] (list 'nth vec-expr i))
+                                      (range n-expr total))]
+                 (bind/bind env (vec rest-exprs))))))})
+
+      ;; ── dissoc: remove keys from a map ─────────────────────
+      ;; (dissoc m :k1 :k2 ...) → new map node without the specified keys.
+      ;; Builds a new map by linking to remaining children of the original.
+      (defop 'dissoc
+        {:construct
+         (fn [env [map-expr & key-exprs]]
+           (let [[env map-node] (bind/resolve-collection env map-expr :map "dissoc")
+                 remove-keys (set key-exprs)
+                 ;; Get the remaining children (those not being removed)
+                 remaining-children (filter
+                                     (fn [child]
+                                       (not (contains? remove-keys (::tree/name child))))
+                                     (tree/children map-node))]
+             ;; Create a new anonymous map node and link to it from current position.
+             ;; This avoids polluting the current scope with keyword children.
+             (let [anon (gensym "dissoc__")
+                   my-pos (tree/position env)
+                   env (tree/ensure-path env [anon])
+                   anon-env (tree/cd env [anon])
+                   ;; Build the map inside the anonymous node
+                   anon-env (assoc anon-env :map true)
+                   anon-env (reduce (fn [e child]
+                                      (let [k (::tree/name child)
+                                            child-target (bind/resolve child)
+                                            target-path (tree/position child-target)]
+                                        (-> (tree/ensure-path e [k])
+                                            (tree/put [k] :link target-path))))
+                                    anon-env
+                                    remaining-children)
+                   ;; Navigate back up to the caller position and link to the anonymous node
+                   root (tree/root anon-env)
+                   anon-abs-path (conj my-pos anon)
+                   result (tree/cd root my-pos)]
+               (assoc result :link anon-abs-path))))})
+
+      ;; ── first: first element of a vector ────────────────────
+      ;; (first v) ≡ (nth v 0) — sugar for the common case.
+      (defop 'first
+        {:construct
+         (fn [env [vec-expr]]
+           (bind/bind env (list 'nth vec-expr 0)))})
+
+      ;; ── rest: all but first element ─────────────────────────
+      ;; (rest v) ≡ (drop 1 v) — returns vector from index 1 onward.
+      (defop 'rest
+        {:construct
+         (fn [env [vec-expr]]
+           (bind/bind env (list 'drop 1 vec-expr)))})
+
+      ;; ── take: first N elements ──────────────────────────────
+      ;; (take n v) → vector of first n elements. Complement to `drop`.
+      ;; n must be a literal integer. Builds [(nth v 0) ... (nth v n-1)].
+      (defop 'take
+        {:construct
+         (fn [env [n-expr vec-expr]]
+           (when-not (integer? n-expr)
+             (throw (ex-info "take: first arg must be a literal integer"
+                             {:n n-expr})))
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "take")
+                 total (count (tree/int-children vec-node))
+                 actual-n (max 0 (min n-expr total))]
+             (if (zero? actual-n)
+               (assoc env :vector true)
+               (let [result-exprs (mapv (fn [i] (list 'nth vec-expr i))
+                                        (range actual-n))]
+                 (bind/bind env (vec result-exprs))))))})
+
+      ;; ── concat: join two vectors ────────────────────────────
+      ;; (concat v1 v2) → new vector with all elements of v1 then v2.
+      ;; Unrolls both sources: [(nth v1 0) ... (nth v1 n1-1) (nth v2 0) ... (nth v2 n2-1)].
+      (defop 'concat
+        {:construct
+         (fn [env [v1-expr v2-expr]]
+           (let [[env v1-node] (bind/resolve-collection env v1-expr :vector "concat")
+                 [env v2-node] (bind/resolve-collection env v2-expr :vector "concat")
+                 n1 (count (tree/int-children v1-node))
+                 n2 (count (tree/int-children v2-node))
+                 v1-elems (mapv (fn [i] (list 'nth v1-expr i)) (range n1))
+                 v2-elems (mapv (fn [i] (list 'nth v2-expr i)) (range n2))
+                 result (vec (clojure.core/concat v1-elems v2-elems))]
+             (bind/bind env result)))})
+
+      ;; ── select-keys: keep specified keys from a map ─────────
+      ;; (select-keys m :k1 :k2 ...) → new map with only the specified keys.
+      ;; Like dissoc but inverted. Uses the anonymous-node-with-links pattern.
+      (defop 'select-keys
+        {:construct
+         (fn [env [map-expr & key-exprs]]
+           (let [[env map-node] (bind/resolve-collection env map-expr :map "select-keys")
+                 keep-keys (set key-exprs)
+                 _ (doseq [k key-exprs]
+                     (when-not (keyword? k)
+                       (throw (ex-info "select-keys: keys must be literal keywords"
+                                       {:key k}))))
+                 kept-children (filter
+                                (fn [child]
+                                  (contains? keep-keys (::tree/name child)))
+                                (tree/children map-node))]
+             (let [anon (gensym "selkeys__")
+                   my-pos (tree/position env)
+                   env (tree/ensure-path env [anon])
+                   anon-env (tree/cd env [anon])
+                   anon-env (assoc anon-env :map true)
+                   anon-env (reduce (fn [e child]
+                                      (let [k (::tree/name child)
+                                            child-target (bind/resolve child)
+                                            target-path (tree/position child-target)]
+                                        (-> (tree/ensure-path e [k])
+                                            (tree/put [k] :link target-path))))
+                                    anon-env
+                                    kept-children)
+                   root (tree/root anon-env)
+                   anon-abs-path (conj my-pos anon)
+                   result (tree/cd root my-pos)]
+               (assoc result :link anon-abs-path))))})
+
+      ;; ── merge: combine two maps (right-biased) ─────────────
+      ;; (merge m1 m2) → new map with keys from both; m2 wins on conflicts.
+      ;; All keys from m1 not in m2, plus all keys from m2.
+      (defop 'merge
+        {:construct
+         (fn [env [m1-expr m2-expr]]
+           (let [[env m1-node] (bind/resolve-collection env m1-expr :map "merge")
+                 [env m2-node] (bind/resolve-collection env m2-expr :map "merge")
+                 m1-children (tree/kw-children m1-node)
+                 m2-children (tree/kw-children m2-node)
+                 m2-keys (set (map ::tree/name m2-children))
+                 ;; m1 children not overridden by m2
+                 m1-only (filter #(not (contains? m2-keys (::tree/name %)))
+                                 m1-children)]
+             (let [anon (gensym "merge__")
+                   my-pos (tree/position env)
+                   env (tree/ensure-path env [anon])
+                   anon-env (tree/cd env [anon])
+                   anon-env (assoc anon-env :map true)
+                   ;; Add m1-only children (link to m1)
+                   anon-env (reduce (fn [e child]
+                                      (let [k (::tree/name child)
+                                            target-path (tree/position (bind/resolve child))]
+                                        (-> (tree/ensure-path e [k])
+                                            (tree/put [k] :link target-path))))
+                                    anon-env
+                                    m1-only)
+                   ;; Add all m2 children (link to m2, overrides m1)
+                   anon-env (reduce (fn [e child]
+                                      (let [k (::tree/name child)
+                                            target-path (tree/position (bind/resolve child))]
+                                        (-> (tree/ensure-path e [k])
+                                            (tree/put [k] :link target-path))))
+                                    anon-env
+                                    m2-children)
+                   root (tree/root anon-env)
+                   anon-abs-path (conj my-pos anon)
+                   result (tree/cd root my-pos)]
+               (assoc result :link anon-abs-path))))})
+
+      ;; ── last: last element of a vector ──────────────────────
+      ;; (last v) ≡ (nth v (dec (count children))) — sugar for last element.
+      (defop 'last
+        {:construct
+         (fn [env [vec-expr]]
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "last")
+                 children (tree/int-children vec-node)
+                 n (count children)]
+             (when (zero? n)
+               (throw (ex-info "last: empty vector" {:vec vec-expr})))
+             (bind/bind env (list 'nth vec-expr (dec n)))))})
+
+      ;; ── conj: append element to a vector ────────────────────
+      ;; (conj v elem) → new vector with elem appended at the end.
+      ;; Unrolls: [(nth v 0) ... (nth v n-1) elem]
+      (defop 'conj
+        {:construct
+         (fn [env [vec-expr elem-expr]]
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "conj")
+                 children (tree/int-children vec-node)
+                 n (count children)
+                 existing-elems (mapv (fn [i] (list 'nth vec-expr i)) (range n))
+                 result (conj existing-elems elem-expr)]
+             (bind/bind env result)))})
+
+      ;; ── reverse: reverse a vector ───────────────────────────
+      ;; (reverse v) → new vector with elements in reverse order.
+      ;; Unrolls: [(nth v n-1) ... (nth v 0)]
+      (defop 'reverse
+        {:construct
+         (fn [env [vec-expr]]
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "reverse")
+                 children (tree/int-children vec-node)
+                 n (count children)
+                 result-exprs (mapv (fn [i] (list 'nth vec-expr i))
+                                    (range (dec n) -1 -1))]
+             (bind/bind env (vec result-exprs))))})
+
+      ;; ── zip: pair two vectors element-wise ──────────────────
+      ;; (zip v1 v2) → [[e1_0 e2_0] [e1_1 e2_1] ...]
+      ;; Vectors must have the same length.
+      (defop 'zip
+        {:construct
+         (fn [env [v1-expr v2-expr]]
+           (let [[env v1-node] (bind/resolve-collection env v1-expr :vector "zip")
+                 [env v2-node] (bind/resolve-collection env v2-expr :vector "zip")
+                 n1 (count (tree/int-children v1-node))
+                 n2 (count (tree/int-children v2-node))]
+             (when (not= n1 n2)
+               (throw (ex-info (str "zip: vectors must have same length, got " n1 " and " n2)
+                               {:v1 v1-expr :v2 v2-expr :n1 n1 :n2 n2})))
+             (let [result-exprs (mapv (fn [i]
+                                        [(list 'nth v1-expr i)
+                                         (list 'nth v2-expr i)])
+                                      (range n1))]
+               (bind/bind env (vec result-exprs)))))})
+
+      ;; ── keys: extract key names from a map as a vector ──────
+      ;; (keys m) → [:k1 :k2 ...] — vector of keyword singletons.
+      ;; Keys are structural, so this always produces concrete values.
+      (defop 'keys
+        {:construct
+         (fn [env [map-expr]]
+           (let [[env map-node] (bind/resolve-collection env map-expr :map "keys")
+                 kw-kids (tree/kw-children map-node)
+                 key-exprs (mapv (fn [child] (::tree/name child)) kw-kids)]
+             (bind/bind env (vec key-exprs))))})
+
+      ;; ── vals: extract values from a map as a vector ─────────
+      ;; (vals m) → [v1 v2 ...] — vector of values, linked to originals.
+      ;; Uses (get m :k) for each key so links enable bidirectional propagation.
+      (defop 'vals
+        {:construct
+         (fn [env [map-expr]]
+           (let [[env map-node] (bind/resolve-collection env map-expr :map "vals")
+                 kw-kids (tree/kw-children map-node)
+                 val-exprs (mapv (fn [child]
+                                   (list 'get map-expr (::tree/name child)))
+                                 kw-kids)]
+             (bind/bind env (vec val-exprs))))})
+
+      ;; ── entries: extract [key value] pairs from a map ───────
+      ;; (entries m) → [[:k1 v1] [:k2 v2] ...] — vector of 2-element vectors.
+      ;; Keys are keyword literals, values use (get m :k) for link propagation.
+      (defop 'entries
+        {:construct
+         (fn [env [map-expr]]
+           (let [[env map-node] (bind/resolve-collection env map-expr :map "entries")
+                 kw-kids (tree/kw-children map-node)
+                 pair-exprs (mapv (fn [child]
+                                    (let [k (::tree/name child)]
+                                      [k (list 'get map-expr k)]))
+                                  kw-kids)]
+             (bind/bind env (vec pair-exprs))))})
+
+      ;; ── map-vals: apply function to every value in a map ────
+      ;; (map-vals m f) → new map where each value is (f old-val).
+      ;; Like update but for all keys. Anonymous-node-with-links pattern.
+      (defop 'map-vals
+        {:construct
+         (fn [env [map-expr f-expr]]
+           (let [[env map-node] (bind/resolve-collection env map-expr :map "map-vals")
+                 all-children (tree/kw-children map-node)
+                 ;; Bind the function to a temp name
+                 f-sym (gensym "mvfn__")
+                 env (bind/bind env f-sym f-expr)]
+             (let [anon (gensym "mapvals__")
+                   my-pos (tree/position env)
+                   env (tree/ensure-path env [anon])
+                   anon-env (tree/cd env [anon])
+                   anon-env (assoc anon-env :map true)
+                   ;; For each child: bind (f (get m k))
+                   anon-env (reduce (fn [e child]
+                                      (let [k (::tree/name child)
+                                            e (tree/ensure-path e [k])
+                                            e (tree/cd e [k])
+                                            e (bind/bind e (list f-sym (list 'get map-expr k)))]
+                                        (tree/cd (tree/root e) (conj my-pos anon))))
+                                    anon-env
+                                    all-children)
+                   root (tree/root anon-env)
+                   anon-abs-path (conj my-pos anon)
+                   result (tree/cd root my-pos)]
+               (assoc result :link anon-abs-path))))})
+
+      ;; ── has-key?: check if a key exists in a map ────────────
+      ;; (has-key? m :k) → true or false (singleton boolean domain).
+      ;; Keys are structural/static, so always decidable at bind time.
+      (defop 'has-key?
+        {:construct
+         (fn [env [map-expr key-expr]]
+           (let [_ (when-not (keyword? key-expr)
+                     (throw (ex-info "has-key?: key must be a literal keyword"
+                                     {:key key-expr})))
+                 [env map-node] (bind/resolve-collection env map-expr :map "has-key?")
+                 kw-kids (tree/kw-children map-node)
+                 key-names (set (map ::tree/name kw-kids))
+                 result (contains? key-names key-expr)]
+             (assoc env :domain (dom/single result))))})
+
+      ;; ── update: apply function to value at key ──────────────
+      ;; (update m :k f) → new map where (:k m) is replaced by (f (:k m)).
+      ;; All other keys linked to original. Key must be a literal keyword.
+      (defop 'update
+        {:construct
+         (fn [env [map-expr key-expr f-expr]]
+           (let [_ (when-not (keyword? key-expr)
+                     (throw (ex-info "update: key must be a literal keyword"
+                                     {:key key-expr})))
+                 [env map-node] (bind/resolve-collection env map-expr :map "update")
+                 all-children (tree/kw-children map-node)
+                 ;; Verify the key exists
+                 _ (when-not (some #(= key-expr (::tree/name %)) all-children)
+                     (throw (ex-info (str "update: key not found: " key-expr)
+                                     {:key key-expr :map map-expr})))
+                 ;; Bind the function to a temp name
+                 f-sym (gensym "updfn__")
+                 env (bind/bind env f-sym f-expr)]
+             (let [anon (gensym "update__")
+                   my-pos (tree/position env)
+                   env (tree/ensure-path env [anon])
+                   anon-env (tree/cd env [anon])
+                   anon-env (assoc anon-env :map true)
+                   ;; For each child: if it's the updated key, bind (f (get m k));
+                   ;; otherwise, link to original.
+                   anon-env (reduce (fn [e child]
+                                      (let [k (::tree/name child)]
+                                        (if (= k key-expr)
+                                          ;; Updated key: bind (f (get m k))
+                                          (let [e (tree/ensure-path e [k])
+                                                e (tree/cd e [k])
+                                                e (bind/bind e (list f-sym (list 'get map-expr key-expr)))]
+                                            (tree/cd (tree/root e) (conj my-pos anon)))
+                                          ;; Other keys: link to original
+                                          (let [target-path (tree/position (bind/resolve child))]
+                                            (-> (tree/ensure-path e [k])
+                                                (tree/put [k] :link target-path))))))
+                                    anon-env
+                                    all-children)
+                   root (tree/root anon-env)
+                   anon-abs-path (conj my-pos anon)
+                   result (tree/cd root my-pos)]
+               (assoc result :link anon-abs-path))))})))
+
+;; ── Destructuring operators ───────────────────────────────────
+
+(defn- register-destructuring
+  "Register destructuring operators: ks, as."
+  [env]
+  (-> env
 
       ;; ════════════════════════════════════════════════════════
       ;; Destructuring operators (via `:destruct` protocol)
@@ -833,62 +1227,35 @@
                  env' (bind/domain-node env name-sym seed-domain seed-sym)
                  ;; Recurse on inner pattern with same seed
                  [env'' inner-syms] (bind/bind-pattern env' inner-pattern seed-sym seed-domain)]
-             [env'' (into [name-sym] inner-syms)]))})
+             [env'' (into [name-sym] inner-syms)]))})))
 
-      ;; ── drop: sub-vector from index N onward ───────────────
-      ;; (drop n v) → new vector containing elements from index n to end.
-      ;; Generalized rest: (drop 1 v) gives elements from index 1 onward.
-      ;; n must be a literal integer. Builds [(nth v n) (nth v n+1) ...].
-      (defop 'drop
-        {:construct
-         (fn [env [n-expr vec-expr]]
-           (let [_ (when-not (integer? n-expr)
-                     (throw (ex-info "drop: first arg must be a literal integer"
-                                     {:n n-expr})))
-                 ;; Resolve the vector
-                 [_ vec-node] (bind/resolve-collection env vec-expr :vector "drop")
-                 children (tree/int-children vec-node)
-                 total (count children)]
-             (if (<= total n-expr)
-               ;; Nothing left — return empty vector
-               (assoc env :vector true)
-               ;; Build rest vector: [(nth vec n) (nth vec n+1) ...]
-               (let [rest-exprs (mapv (fn [i] (list 'nth vec-expr i))
-                                      (range n-expr total))]
-                 (bind/bind env (vec rest-exprs))))))})
+;; ── Predicate operators ───────────────────────────────────────
 
-      ;; ── dissoc: remove keys from a map ─────────────────────
-      ;; (dissoc m :k1 :k2 ...) → new map node without the specified keys.
-      ;; Builds a new map by linking to remaining children of the original.
-      (defop 'dissoc
-        {:construct
-         (fn [env [map-expr & key-exprs]]
-           (let [[_ map-node] (bind/resolve-collection env map-expr :map "dissoc")
-                 remove-keys (set key-exprs)
-                 ;; Get the remaining children (those not being removed)
-                 remaining-children (filter
-                                     (fn [child]
-                                       (not (contains? remove-keys (::tree/name child))))
-                                     (tree/children map-node))]
-             ;; Create a new anonymous map node and link to it from current position.
-             ;; This avoids polluting the current scope with keyword children.
-             (let [anon (gensym "dissoc__")
-                   my-pos (tree/position env)
-                   env (tree/ensure-path env [anon])
-                   anon-env (tree/cd env [anon])
-                   ;; Build the map inside the anonymous node
-                   anon-env (assoc anon-env :map true)
-                   anon-env (reduce (fn [e child]
-                                      (let [k (::tree/name child)
-                                            child-target (bind/resolve child)
-                                            target-path (tree/position child-target)]
-                                        (-> (tree/ensure-path e [k])
-                                            (tree/put [k] :link target-path))))
-                                    anon-env
-                                    remaining-children)
-                   ;; Navigate back up to the caller position and link to the anonymous node
-                   root (tree/root anon-env)
-                   anon-abs-path (conj my-pos anon)
-                   result (tree/cd root my-pos)]
-               (assoc result :link anon-abs-path))))})))
+(defn- register-predicates
+  "Register filter predicates: even, odd, pos, neg, zero."
+  [env]
+  ;; Each narrows a domain by filtering with a Clojure predicate.
+  ;; No ? suffix — these are constraints, not boolean predicates.
+  (defops env (for [[sym pred-fn label] [['even even? "even"]
+                                         ['odd odd? "odd"]
+                                         ['pos pos? "positive"]
+                                         ['neg neg? "negative"]
+                                         ['zero zero? "zero"]]]
+                [sym {:construct (filter-pred-bind pred-fn label)}])))
 
+;; ════════════════════════════════════════════════════════════════
+;; Base environment assembly
+;; ════════════════════════════════════════════════════════════════
+
+(defn base-env
+  "Build the base environment with all built-in forms."
+  []
+  (-> {}
+      (register-core-forms)
+      (register-relational)
+      (register-arithmetic)
+      (register-type-system)
+      (register-definitions)
+      (register-collections)
+      (register-destructuring)
+      (register-predicates)))

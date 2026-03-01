@@ -137,8 +137,8 @@
                    (tree/put [anon] :derived true))]
       [env' [anon]])
 
-    ;; Expression → create anonymous child, bind the expr there
-    (seq? expr)
+    ;; Expression or literal collection → create anonymous child, bind the expr there
+    (or (seq? expr) (vector? expr) (map? expr))
     (let [anon (gensym "expr")
           env' (-> (bind env anon expr)
                    (tree/put [anon] :derived true))]
@@ -221,8 +221,9 @@
 (defn resolve-to-node
   "Resolve an expression to its tree node.
    Returns [env' resolved-node] where env' may differ from env
-   when expr is a list (creates a temp node via ensure-node-abs).
+   when expr is a compound expression (creates a temp node via ensure-node-abs).
    For symbol expressions, env' = env.
+   Handles symbols, nested expressions, and literal collections (vectors, maps).
    Throws if the expression cannot be resolved."
   [env expr op-name]
   (cond
@@ -231,9 +232,11 @@
       [env (narrow/resolve found)]
       (throw (ex-info (str op-name ": cannot resolve: " expr)
                       {:expr expr})))
-    (seq? expr)
+
+    (or (seq? expr) (vector? expr) (map? expr))
     (let [[env' path] (ensure-node-abs env expr)]
       [env' (narrow/resolve-at (tree/root env') path)])
+
     :else
     (throw (ex-info (str op-name ": argument must be a symbol or expression")
                     {:expr expr}))))
