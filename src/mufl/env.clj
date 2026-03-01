@@ -661,7 +661,7 @@
 
 (defn- register-collections
   "Register collection operators: get, nth, count, map, filter, reduce, drop, dissoc, distinct,
-   first, rest, take, concat, select-keys, merge, update."
+   first, rest, take, concat, select-keys, merge, update, sort, sorted?."
   [env]
   (-> env
 
@@ -1120,6 +1120,256 @@
                    result (tree/cd root my-pos)]
                (assoc result :link anon-abs-path))))})
 
+      ;; ── assoc: replace element at index in a vector ──────────
+      ;; (assoc v i val) → new vector with element at index i replaced.
+      ;; Unrolls: [(nth v 0) ... val ... (nth v n-1)] with val at position i.
+      ;; i must be a literal integer within bounds.
+      (defop 'assoc
+        {:construct
+         (fn [env [vec-expr idx-expr val-expr]]
+           (let [_ (when-not (integer? idx-expr)
+                     (throw (ex-info "assoc: index must be a literal integer"
+                                     {:idx idx-expr})))
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "assoc")
+                 children (tree/int-children vec-node)
+                 n (count children)]
+             (when (or (< idx-expr 0) (>= idx-expr n))
+               (throw (ex-info (str "assoc: index out of bounds: " idx-expr " (size " n ")")
+                               {:idx idx-expr :size n})))
+             (let [result-exprs (mapv (fn [i]
+                                        (if (= i idx-expr)
+                                          val-expr
+                                          (list 'nth vec-expr i)))
+                                      (range n))]
+               (bind/bind env (vec result-exprs)))))})
+
+      ;; ── every: universal quantifier ──────────────────────────
+      ;; (every pred v) — applies pred to every element. Unlike filter
+      ;; (which silently removes), every THROWS if any element contradicts
+      ;; the predicate. Returns the vector itself (with narrowed elements).
+      (defop 'every
+        {:construct
+         (fn [env [pred-expr vec-expr]]
+           (let [pred-sym (gensym "everyfn__")
+                 env (bind/bind env pred-sym pred-expr)
+                 ;; Bind vec to a stable name so nth references the same node
+                 vec-sym (gensym "everyvec__")
+                 env (bind/bind env vec-sym vec-expr)
+                 [env vec-node] (bind/resolve-collection env vec-sym :vector "every")
+                 children (tree/int-children vec-node)
+                 n (count children)
+                 my-pos (tree/position env)]
+             ;; Apply pred to each element — all must succeed
+             (let [env' (reduce
+                         (fn [e i]
+                           (try
+                             (let [result (bind/bind e (list pred-sym (list 'nth vec-sym i)))]
+                               ;; Navigate back, clearing :link from predicate return
+                               (-> (tree/cd (tree/root result) my-pos)
+                                   (dissoc :link)))
+                             (catch Exception ex
+                               (throw (ex-info (str "every: predicate failed on element " i)
+                                               {:index i :vec vec-expr :cause (.getMessage ex)})))))
+                         env
+                         (range n))]
+               ;; Return the vector (via stable name → links to narrowed version)
+               (bind/bind env' vec-sym))))})
+
+      ;; ── some: existential quantifier ────────────────────────
+      ;; (some pred v) — succeeds if at least one element satisfies pred.
+      ;; Conservative: for each element, tries the predicate. Keeps elements
+      ;; where pred might hold. Returns the vector itself.
+      ;; Throws if NO element satisfies the predicate (contradiction).
+      (defop 'some
+        {:construct
+         (fn [env [pred-expr vec-expr]]
+           (let [pred-sym (gensym "somefn__")
+                 env (bind/bind env pred-sym pred-expr)
+                 ;; Bind vec to a stable name for consistent referencing
+                 vec-sym (gensym "somevec__")
+                 env (bind/bind env vec-sym vec-expr)
+                 [env vec-node] (bind/resolve-collection env vec-sym :vector "some")
+                 children (tree/int-children vec-node)
+                 n (count children)]
+             ;; Try pred on each element. At least one must succeed.
+             (let [any-ok? (some
+                            (fn [i]
+                              (try
+                                (bind/bind env (list pred-sym (list 'nth vec-sym i)))
+                                true
+                                (catch Exception _ false)))
+                            (range n))]
+               (when-not any-ok?
+                 (throw (ex-info "some: no element satisfies predicate"
+                                 {:vec vec-expr})))
+               ;; Return the vector
+               (bind/bind env vec-sym))))})
+
+      ;; ── filter-map: keep map entries matching predicate ─────
+      ;; (filter-map pred m) — for each kw-child, applies pred to value.
+      ;; Keeps entries where pred doesn't contradict. Same pattern as
+      ;; vector filter but on map kw-children. Returns new anonymous map.
+      (defop 'filter-map
+        {:construct
+         (fn [env [pred-expr map-expr]]
+           (let [pred-sym (gensym "fmfn__")
+                 env (bind/bind env pred-sym pred-expr)
+                 [env map-node] (bind/resolve-collection env map-expr :map "filter-map")
+                 all-children (tree/kw-children map-node)]
+             ;; For each entry, try the predicate on its value
+             (let [surviving-children
+                   (filter
+                    (fn [child]
+                      (let [k (::tree/name child)]
+                        (try
+                          (bind/bind env (list pred-sym (list 'get map-expr k)))
+                          true
+                          (catch Exception _ false))))
+                    all-children)]
+               ;; Build anonymous map node with surviving entries
+               (let [anon (gensym "filtmap__")
+                     my-pos (tree/position env)
+                     env (tree/ensure-path env [anon])
+                     anon-env (tree/cd env [anon])
+                     anon-env (assoc anon-env :map true)
+                     anon-env (reduce (fn [e child]
+                                        (let [k (::tree/name child)
+                                              target-path (tree/position (bind/resolve child))]
+                                          (-> (tree/ensure-path e [k])
+                                              (tree/put [k] :link target-path))))
+                                      anon-env
+                                      surviving-children)
+                     root (tree/root anon-env)
+                     anon-abs-path (conj my-pos anon)
+                     result (tree/cd root my-pos)]
+                 (assoc result :link anon-abs-path)))))})
+
+      ;; ── contains?: membership constraint ─────────────────────
+      ;; (contains? v x) — constrains x to be one of the elements of v.
+      ;; Creates a constraint node for bidirectional propagation:
+      ;; x is narrowed to union of element domains; elements are filtered
+      ;; to those whose domain intersects x's domain.
+      (defop 'contains?
+        {:construct
+         (fn [env [vec-expr x-expr]]
+           (let [my-pos (tree/position env)
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "contains?")
+                 vec-path (tree/position vec-node)
+                 [env x-path] (bind/ensure-node-abs env x-expr)
+                 ;; Compute initial domain for x: union of all element domains
+                 children (tree/int-children vec-node)
+                 elem-union (reduce dom/unite dom/void
+                                    (map #(bind/domain-of (tree/root env) (tree/position (bind/resolve %)))
+                                         children))
+                 x-dom (bind/domain-of (tree/root env) x-path)
+                 x-narrowed (dom/intersect x-dom elem-union)]
+             (if (dom/void? x-narrowed)
+               (throw (ex-info "contains?: no element can match x"
+                               {:vec vec-expr :x x-expr}))
+               (let [env (bind/set-domain (tree/root env) x-path x-narrowed)
+                     env (or (tree/cd env my-pos) env)
+                     ;; Collect element paths for the constraint
+                     elem-paths (mapv #(tree/position (bind/resolve %)) children)]
+                 (bind/add-constraint-and-return env :contains
+                                                 (into [vec-path x-path] elem-paths)
+                                                 my-pos)))))})
+
+      ;; ── index-of: inverse of nth ───────────────────────────
+      ;; (index-of v x) — returns the index where x appears in v.
+      ;; Result domain = set of positions where element domain intersects x.
+      ;; If x known → narrow result to matching positions.
+      ;; If result known → narrow x to element at that position.
+      (defop 'index-of
+        {:construct
+         (fn [env [vec-expr x-expr]]
+           (let [my-pos (tree/position env)
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "index-of")
+                 vec-path (tree/position vec-node)
+                 [env x-path] (bind/ensure-node-abs env x-expr)
+                 children (tree/int-children vec-node)
+                 x-dom (bind/domain-of (tree/root env) x-path)
+                 ;; Find positions where element domain intersects x
+                 matching-positions (set (keep (fn [child]
+                                                 (let [elem-dom (bind/domain-of (tree/root env)
+                                                                                (tree/position (bind/resolve child)))
+                                                       idx (::tree/name child)]
+                                                   (when-not (dom/void? (dom/intersect elem-dom x-dom))
+                                                     idx)))
+                                               children))]
+             (if (empty? matching-positions)
+               (throw (ex-info "index-of: element not found in vector"
+                               {:vec vec-expr :x x-expr}))
+               (let [result-dom (dom/finite matching-positions)
+                     env (assoc env :domain result-dom)
+                     result-path (tree/position env)
+                     elem-paths (mapv #(tree/position (bind/resolve %)) children)]
+                 (bind/add-constraint-and-return env :index-of
+                                                 (into [vec-path x-path result-path] elem-paths)
+                                                 my-pos)))))})
+
+      ;; ── min-of: minimum element of vector ──────────────────
+      ;; (min-of v) — result ≤ all elements. All elements ≥ result.
+      ;; Narrows result to domain of possible minima.
+      (defop 'min-of
+        {:construct
+         (fn [env [vec-expr]]
+           (let [my-pos (tree/position env)
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "min-of")
+                 vec-path (tree/position vec-node)
+                 children (tree/int-children vec-node)
+                 _ (when (empty? children)
+                     (throw (ex-info "min-of: empty vector" {:vec vec-expr})))
+                 ;; Initial result domain: values that could be the minimum
+                 ;; = union of element domains, then filter to those ≤ all maxima
+                 elem-doms (mapv #(bind/domain-of (tree/root env) (tree/position (bind/resolve %)))
+                                 children)
+                 elem-union (reduce dom/unite dom/void elem-doms)
+                 ;; Result can't be greater than the minimum of all domain maxima
+                 upper-bound (reduce (fn [acc d]
+                                       (let [mx (dom/domain-max d)]
+                                         (if (and acc mx) (min acc mx) (or acc mx))))
+                                     nil elem-doms)
+                 result-dom (if upper-bound
+                              (dom/intersect elem-union (dom/range-dom nil upper-bound))
+                              elem-union)
+                 env (assoc env :domain result-dom)
+                 result-path (tree/position env)
+                 elem-paths (mapv #(tree/position (bind/resolve %)) children)]
+             (bind/add-constraint-and-return env :min-of
+                                             (into [result-path] elem-paths)
+                                             my-pos)))})
+
+      ;; ── max-of: maximum element of vector ──────────────────
+      ;; (max-of v) — result ≥ all elements. All elements ≤ result.
+      ;; Narrows result to domain of possible maxima.
+      (defop 'max-of
+        {:construct
+         (fn [env [vec-expr]]
+           (let [my-pos (tree/position env)
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "max-of")
+                 vec-path (tree/position vec-node)
+                 children (tree/int-children vec-node)
+                 _ (when (empty? children)
+                     (throw (ex-info "max-of: empty vector" {:vec vec-expr})))
+                 ;; Initial result domain: values that could be the maximum
+                 elem-doms (mapv #(bind/domain-of (tree/root env) (tree/position (bind/resolve %)))
+                                 children)
+                 elem-union (reduce dom/unite dom/void elem-doms)
+                 ;; Result can't be less than the maximum of all domain minima
+                 lower-bound (reduce (fn [acc d]
+                                       (let [mn (dom/domain-min d)]
+                                         (if (and acc mn) (max acc mn) (or acc mn))))
+                                     nil elem-doms)
+                 result-dom (if lower-bound
+                              (dom/intersect elem-union (dom/range-dom lower-bound nil))
+                              elem-union)
+                 env (assoc env :domain result-dom)
+                 result-path (tree/position env)
+                 elem-paths (mapv #(tree/position (bind/resolve %)) children)]
+             (bind/add-constraint-and-return env :max-of
+                                             (into [result-path] elem-paths)
+                                             my-pos)))})
+
       ;; ── has-key?: check if a key exists in a map ────────────
       ;; (has-key? m :k) → true or false (singleton boolean domain).
       ;; Keys are structural/static, so always decidable at bind time.
@@ -1134,6 +1384,97 @@
                  key-names (set (map ::tree/name kw-kids))
                  result (contains? key-names key-expr)]
              (assoc env :domain (dom/single result))))})
+
+      ;; ── sort: sorted permutation of vector ──────────────────
+      ;; (sort v) → new vector that is a sorted (non-decreasing) permutation of v.
+      ;; Creates fresh result nodes with ordering constraints (<=) between
+      ;; consecutive elements, plus a :sorted-perm constraint linking input
+      ;; and output for bidirectional domain propagation.
+      (defop 'sort
+        {:construct
+         (fn [env [vec-expr]]
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "sort")
+                 my-pos (tree/position env)
+                 children (tree/int-children vec-node)
+                 n (count children)]
+             (if (zero? n)
+               ;; Empty vector → return empty vector
+               (bind/bind env [])
+               (if (= 1 n)
+                 ;; Single element → return vector linked to original element
+                 (bind/bind env [(list 'nth vec-expr 0)])
+                 ;; Check if all inputs are ground (singleton domains)
+                 (let [input-paths (mapv #(tree/position (bind/resolve %)) children)
+                       input-doms (mapv #(bind/domain-of (tree/root env) %) input-paths)
+                       all-ground? (every? dom/singleton? input-doms)]
+                   (if all-ground?
+                     ;; Fast path: all inputs are concrete — sort and bind directly
+                     (let [sorted-vals (vec (clojure.core/sort (map dom/singleton-val input-doms)))]
+                       (bind/bind env sorted-vals))
+                     ;; General case: build fresh result vector with constraints
+                     (let [elem-union (reduce dom/unite dom/void input-doms)
+
+                           ;; Create n fresh result symbols as integer variables
+                           result-syms (mapv (fn [_] (gensym "sort_r__")) (range n))
+
+                           ;; Bind each result symbol as (integer), then narrow domain
+                           env (reduce (fn [e sym]
+                                         ;; Navigate to workspace first
+                                         (let [e (tree/cd (tree/root e) my-pos)
+                                               e (bind/bind e sym '(integer))
+                                               sym-path (tree/position (bind/resolve (tree/find e [sym])))
+                                               e (bind/set-domain (tree/root e) sym-path elem-union)]
+                                           e))
+                                       env result-syms)
+                           env (tree/cd env my-pos)
+
+                           ;; Add ordering constraints: r[0] <= r[1] <= ... <= r[n-1]
+                           env (reduce (fn [e i]
+                                         (let [e (tree/cd (tree/root e) my-pos)
+                                               result (bind/bind e (list '<= (nth result-syms i)
+                                                                        (nth result-syms (inc i))))]
+                                           (tree/root result)))
+                                       env (range (dec n)))
+                           env (tree/cd env my-pos)
+
+                           ;; Collect output element paths (after binding + ordering)
+                           output-paths (mapv (fn [sym]
+                                                (tree/position
+                                                 (bind/resolve (tree/find env [sym]))))
+                                              result-syms)
+
+                           ;; Add :sorted-perm constraint for bidirectional propagation
+                           ;; refs: [input-paths... output-paths...] (n of each)
+                           all-refs (into input-paths output-paths)
+                           env-root (bind/add-constraint (tree/root env) :sorted-perm all-refs my-pos)]
+
+                       (if env-root
+                         ;; Build the result vector expression from the result symbols
+                         (let [env (tree/cd env-root my-pos)]
+                           (bind/bind env (vec result-syms)))
+                         (throw (ex-info "Contradiction in sort" {:vec vec-expr}))))))))))})
+
+      ;; ── sorted?: assert vector is already sorted ────────────
+      ;; (sorted? v) → adds <= constraints between consecutive elements.
+      ;; Returns the vector unchanged. Contradiction if unsortable.
+      (defop 'sorted?
+        {:construct
+         (fn [env [vec-expr]]
+           (let [[env vec-node] (bind/resolve-collection env vec-expr :vector "sorted?")
+                 my-pos (tree/position env)
+                 children (tree/int-children vec-node)
+                 n (count children)]
+             (if (<= n 1)
+               ;; 0 or 1 elements: trivially sorted, return as-is
+               (assoc env :link (tree/position vec-node))
+               ;; Add ordering constraints between consecutive elements
+               (let [env (reduce (fn [e i]
+                                   (let [result (bind/bind e (list '<= (list 'nth vec-expr i)
+                                                                  (list 'nth vec-expr (inc i))))]
+                                     (tree/cd (tree/root result) my-pos)))
+                                 env (range (dec n)))]
+                 ;; Return the original vector (linked)
+                 (assoc env :link (tree/position vec-node))))))})
 
       ;; ── update: apply function to value at key ──────────────
       ;; (update m :k f) → new map where (:k m) is replaced by (f (:k m)).

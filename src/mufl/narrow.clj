@@ -401,6 +401,7 @@
 
 (defn- alldiff-pass
   "One pass of alldiff narrowing: for each singleton, remove its value from others.
+   Also detects duplicate singletons and pigeonhole violations.
    Returns {:env :changed :any-change} or nil on contradiction."
   [env refs]
   (let [singletons (into {}
@@ -409,23 +410,35 @@
                                    (when (dom/singleton? d)
                                      [p (dom/singleton-val d)]))))
                          refs)
-        others (remove (set (keys singletons)) refs)]
-    (reduce
-     (fn [acc [_path val]]
-       (reduce
-        (fn [{:keys [env changed any-change]} other-path]
-          (let [other-dom (domain-of env other-path)
-                narrowed (dom/subtract other-dom (dom/single val))]
-            (cond
-              (dom/void? narrowed) (reduced nil)
-              (= narrowed other-dom) {:env env :changed changed :any-change any-change}
-              :else {:env (set-domain env other-path narrowed)
-                     :changed (conj changed other-path)
-                     :any-change true})))
-        acc
-        others))
-     {:env env :changed [] :any-change false}
-     singletons)))
+        ;; Check for duplicate singleton values — two vars can't both be the same value
+        singleton-vals (vals singletons)
+        has-dup-singletons? (and (seq singleton-vals)
+                                 (not (apply distinct? singleton-vals)))]
+    (if has-dup-singletons?
+      nil ;; contradiction: two variables share the same concrete value
+      ;; Pigeonhole: if number of variables exceeds the domain union size, impossible
+      (let [all-doms (mapv #(domain-of env %) refs)
+            dom-union (reduce dom/unite dom/void all-doms)
+            union-size (dom/size dom-union)]
+        (if (and union-size (> (count refs) union-size))
+          nil ;; contradiction: more variables than possible values
+          (let [others (remove (set (keys singletons)) refs)]
+            (reduce
+             (fn [acc [_path val]]
+               (reduce
+                (fn [{:keys [env changed any-change]} other-path]
+                  (let [other-dom (domain-of env other-path)
+                        narrowed (dom/subtract other-dom (dom/single val))]
+                    (cond
+                      (dom/void? narrowed) (reduced nil)
+                      (= narrowed other-dom) {:env env :changed changed :any-change any-change}
+                      :else {:env (set-domain env other-path narrowed)
+                             :changed (conj changed other-path)
+                             :any-change true})))
+                acc
+                others))
+             {:env env :changed [] :any-change false}
+             singletons)))))))
 
 (defn- narrow-alldiff
   "Narrow for all-different constraint. Repeats until no progress."
@@ -453,6 +466,257 @@
         (apply-narrowings env [[a-path a-new] [c-path c-new]]))
       {:env env :changed []})))
 
+(defn- narrow-contains
+  "Narrow membership constraint: ∃i: (nth v i) = x.
+   refs: [v-path x-path & elem-paths] where v is a vector node."
+  [env [v-path x-path & elem-paths]]
+  (let [x-dom (domain-of env x-path)
+        ;; x must be in the union of element domains
+        elem-union (reduce dom/unite dom/void
+                           (map #(domain-of env %) elem-paths))
+        x-narrowed (dom/intersect x-dom elem-union)]
+    (if (dom/void? x-narrowed)
+      nil ;; contradiction — no element can match x
+      (apply-narrowings env
+                        (cons [x-path x-narrowed]
+                              ;; Also: if x is finite, narrow each element to
+                              ;; at least overlap with x (but only if element
+                              ;; domain would actually change — conservative)
+                              (when (dom/finite? x-narrowed)
+                                ;; Don't remove elements from vector, just ensure
+                                ;; the constraint is satisfiable
+                                []))))))
+
+(defn- narrow-index-of
+  "Narrow for index-of constraint.
+   refs: [v-path x-path result-path & elem-paths]"
+  [env [v-path x-path result-path & elem-paths]]
+  (let [x-dom (domain-of env x-path)
+        result-dom (domain-of env result-path)
+        ;; Find positions where element domain intersects x
+        matching-positions
+        (set (keep-indexed
+              (fn [idx elem-path]
+                (let [elem-dom (domain-of env elem-path)]
+                  (when-not (dom/void? (dom/intersect elem-dom x-dom))
+                    idx)))
+              elem-paths))
+        ;; Narrow result to valid positions
+        new-result (dom/intersect result-dom (dom/finite matching-positions))]
+    (if (dom/void? new-result)
+      nil ;; contradiction
+      (let [;; If result is singleton, narrow x to that element's domain
+            x-target-dom (if (dom/singleton? new-result)
+                           (let [idx (dom/singleton-val new-result)]
+                             (domain-of env (nth elem-paths idx)))
+                           ;; Narrow x to union of matching element domains
+                           (reduce dom/unite dom/void
+                                   (keep (fn [idx]
+                                           (when (dom/contains-val? new-result idx)
+                                             (domain-of env (nth elem-paths idx))))
+                                         (range (count elem-paths)))))
+            x-narrowed (dom/intersect x-dom x-target-dom)]
+        (if (dom/void? x-narrowed)
+          nil
+          (apply-narrowings env [[result-path new-result] [x-path x-narrowed]]))))))
+
+(defn- narrow-min-of
+  "Narrow for min-of constraint: result = min(elements).
+   refs: [result-path & elem-paths]
+   - result ≤ every element
+   - result ∈ union of element domains
+   - each element ≥ result"
+  [env [result-path & elem-paths]]
+  (let [result-dom (domain-of env result-path)
+        elem-doms (mapv #(domain-of env %) elem-paths)
+        ;; result must be in the union of element domains
+        elem-union (reduce dom/unite dom/void elem-doms)
+        ;; result can't exceed the smallest maximum among elements
+        upper-bound (reduce (fn [acc d]
+                              (let [mx (dom/domain-max d)]
+                                (if (and acc mx) (min acc mx) (or acc mx))))
+                            nil elem-doms)
+        result-candidate (dom/intersect result-dom elem-union)
+        result-new (if upper-bound
+                     (dom/intersect result-candidate (dom/range-dom nil upper-bound))
+                     result-candidate)]
+    (if (dom/void? result-new)
+      nil ;; contradiction
+      ;; Each element must be ≥ min(result domain)
+      (let [result-min (dom/domain-min result-new)
+            elem-narrowings (when result-min
+                              (keep (fn [elem-path]
+                                      (let [elem-dom (domain-of env elem-path)
+                                            narrowed (dom/domain-at-least elem-dom result-min)]
+                                        (when-not (= narrowed elem-dom)
+                                          [elem-path narrowed])))
+                                    elem-paths))]
+        (apply-narrowings env (cons [result-path result-new]
+                                    elem-narrowings))))))
+
+(defn- narrow-max-of
+  "Narrow for max-of constraint: result = max(elements).
+   refs: [result-path & elem-paths]
+   - result ≥ every element
+   - result ∈ union of element domains
+   - each element ≤ result"
+  [env [result-path & elem-paths]]
+  (let [result-dom (domain-of env result-path)
+        elem-doms (mapv #(domain-of env %) elem-paths)
+        ;; result must be in the union of element domains
+        elem-union (reduce dom/unite dom/void elem-doms)
+        ;; result can't be less than the largest minimum among elements
+        lower-bound (reduce (fn [acc d]
+                              (let [mn (dom/domain-min d)]
+                                (if (and acc mn) (max acc mn) (or acc mn))))
+                            nil elem-doms)
+        result-candidate (dom/intersect result-dom elem-union)
+        result-new (if lower-bound
+                     (dom/intersect result-candidate (dom/range-dom lower-bound nil))
+                     result-candidate)]
+    (if (dom/void? result-new)
+      nil ;; contradiction
+      ;; Each element must be ≤ max(result domain)
+      (let [result-max (dom/domain-max result-new)
+            elem-narrowings (when result-max
+                              (keep (fn [elem-path]
+                                      (let [elem-dom (domain-of env elem-path)
+                                            narrowed (dom/domain-at-most elem-dom result-max)]
+                                        (when-not (= narrowed elem-dom)
+                                          [elem-path narrowed])))
+                                    elem-paths))]
+        (apply-narrowings env (cons [result-path result-new]
+                                    elem-narrowings))))))
+
+(defn- narrow-sorted-perm
+  "Narrow for sorted-permutation constraint.
+   refs: [input-path-0 ... input-path-(n-1) output-path-0 ... output-path-(n-1)]
+   Length is always 2*n (equal number of input and output paths).
+
+   Enforces: output is a sorted permutation of input.
+   - Forward:  each output[i] ∈ union(input domains), bounded by ordering
+   - Backward: each input[j] ∈ union(output domains)
+   - Singleton counting: if a value appears exactly k times as input singletons,
+     then exactly k output positions must hold that value
+   - Ground output: if all inputs are singleton, compute sorted order directly"
+  [env refs]
+  (let [refs (vec refs)
+        n (/ (count refs) 2)
+        input-paths (subvec refs 0 n)
+        output-paths (subvec refs n)
+
+        input-doms (mapv #(domain-of env %) input-paths)
+        output-doms (mapv #(domain-of env %) output-paths)
+
+        ;; Check if all inputs are ground — if so, compute sorted result directly
+        input-singletons (mapv #(when (dom/singleton? %) (dom/singleton-val %)) input-doms)
+        all-input-ground? (every? some? input-singletons)]
+
+    (if all-input-ground?
+      ;; All inputs ground: set each output to its exact sorted value
+      (let [sorted-vals (vec (sort input-singletons))]
+        (apply-narrowings env
+                          (keep-indexed
+                           (fn [i opath]
+                             (let [target (dom/single (nth sorted-vals i))
+                                   od (nth output-doms i)]
+                               (when-not (= target od)
+                                 [opath target])))
+                           output-paths)))
+
+      ;; General case: propagate via domain bounds
+      (let [;; Union of all input domains — every output element must come from here
+            input-union (reduce dom/unite dom/void input-doms)
+            ;; Union of all output domains — every input element must appear somewhere
+            output-union (reduce dom/unite dom/void output-doms)
+
+            ;; Global bounds from input
+            global-min (reduce (fn [acc d]
+                                 (let [m (dom/domain-min d)]
+                                   (if (and acc m) (min acc m) (or acc m))))
+                               nil input-doms)
+            global-max (reduce (fn [acc d]
+                                 (let [m (dom/domain-max d)]
+                                   (if (and acc m) (max acc m) (or acc m))))
+                               nil input-doms)
+
+            ;; Singleton counting from inputs: {value → count}
+            ;; Values that are definitely in the input (singleton domains)
+            input-val-counts (reduce (fn [acc d]
+                                       (if (dom/singleton? d)
+                                         (update acc (dom/singleton-val d) (fnil inc 0))
+                                         acc))
+                                     {} input-doms)
+
+            ;; Forward narrowing: output[i] ⊆ input-union, with positional bounds
+            output-narrowings
+            (keep-indexed
+             (fn [i opath]
+               (let [od (nth output-doms i)
+                     ;; Intersect with input union
+                     narrowed (dom/intersect od input-union)
+                     ;; output[0] ≥ global min
+                     narrowed (if (and (zero? i) global-min)
+                                (dom/intersect narrowed (dom/range-dom global-min nil))
+                                narrowed)
+                     ;; output[n-1] ≤ global max
+                     narrowed (if (and (= i (dec n)) global-max)
+                                (dom/intersect narrowed (dom/range-dom nil global-max))
+                                narrowed)
+                     ;; Ordering bounds from neighbors:
+                     ;; output[i] ≥ min(output[i-1]) and output[i] ≤ max(output[i+1])
+                     narrowed (if (pos? i)
+                                (let [prev-min (dom/domain-min (nth output-doms (dec i)))]
+                                  (if prev-min
+                                    (dom/intersect narrowed (dom/range-dom prev-min nil))
+                                    narrowed))
+                                narrowed)
+                     narrowed (if (< i (dec n))
+                                (let [next-max (dom/domain-max (nth output-doms (inc i)))]
+                                  (if next-max
+                                    (dom/intersect narrowed (dom/range-dom nil next-max))
+                                    narrowed))
+                                narrowed)]
+                 (when-not (= narrowed od)
+                   [opath narrowed])))
+             output-paths)
+
+            ;; Backward narrowing: input[j] ⊆ output-union
+            input-narrowings
+            (keep-indexed
+             (fn [j ipath]
+               (let [id (nth input-doms j)
+                     narrowed (dom/intersect id output-union)]
+                 (when-not (= narrowed id)
+                   [ipath narrowed])))
+             input-paths)
+
+            ;; Singleton-count narrowing:
+            ;; If value v appears k times in input singletons, and we know which
+            ;; output positions could hold v (sorted order), we can narrow.
+            ;; Specifically: if only k output positions have v in their domain,
+            ;; those positions MUST be v.
+            singleton-narrowings
+            (mapcat
+             (fn [[v cnt]]
+               ;; Find output positions whose domain contains v
+               (let [candidate-indices (keep-indexed
+                                        (fn [i od]
+                                          (when (dom/contains-val? od v) i))
+                                        output-doms)]
+                 ;; If exactly cnt positions can hold v, all must be v
+                 (when (= (count candidate-indices) cnt)
+                   (keep (fn [i]
+                           (let [od (nth output-doms i)]
+                             (when-not (dom/singleton? od)
+                               [(nth output-paths i) (dom/single v)])))
+                         candidate-indices))))
+             input-val-counts)]
+
+        (apply-narrowings env (concat output-narrowings
+                                      input-narrowings
+                                      singleton-narrowings))))))
+
 (def narrowing-fns
   {:< narrow-lt
    :> narrow-gt
@@ -466,7 +730,12 @@
    :mod narrow-mod
    :quot narrow-quot
    :abs narrow-abs
-   :alldiff narrow-alldiff})
+   :alldiff narrow-alldiff
+   :contains narrow-contains
+   :index-of narrow-index-of
+   :min-of narrow-min-of
+   :max-of narrow-max-of
+   :sorted-perm narrow-sorted-perm})
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Propagation engine
