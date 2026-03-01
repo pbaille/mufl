@@ -325,7 +325,7 @@
 (deftest zip-length-mismatch
   (testing "zip throws on different-length vectors"
     (is (thrown-with-msg? Exception #"same length"
-          (m/query (zip [1 2] [3 4 5]))))))
+                          (m/query (zip [1 2] [3 4 5]))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; keys — extract key names from a map
@@ -474,11 +474,11 @@
 (deftest assoc-errors
   (testing "assoc throws on out-of-bounds index"
     (is (thrown-with-msg? Exception #"out of bounds"
-          (m/query (assoc [1 2 3] 5 99)))))
+                          (m/query (assoc [1 2 3] 5 99)))))
 
   (testing "assoc throws on negative index"
     (is (thrown-with-msg? Exception #"out of bounds"
-          (m/query (assoc [1 2 3] -1 99))))))
+                          (m/query (assoc [1 2 3] -1 99))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; every — universal quantifier
@@ -498,11 +498,11 @@
 (deftest every-contradiction
   (testing "every throws when an element contradicts"
     (is (thrown? Exception
-          (m/query (every even [1 2 4])))))
+                 (m/query (every even [1 2 4])))))
 
   (testing "every throws on all-odd"
     (is (thrown? Exception
-          (m/query (every even [1 3 5]))))))
+                 (m/query (every even [1 3 5]))))))
 
 (deftest every-with-function
   (testing "every with inline predicate"
@@ -531,7 +531,7 @@
 (deftest some-contradiction
   (testing "some throws when no element satisfies"
     (is (thrown? Exception
-          (m/query (some even [1 3 5]))))))
+                 (m/query (some even [1 3 5]))))))
 
 (deftest some-with-domains
   (testing "some with domain values — at least one can be even"
@@ -583,46 +583,46 @@
 (deftest contains-forward
   (testing "contains? narrows x to possible elements"
     (is (= #{1 2 3} (set (m/query (fresh [(integer x)]
-                                    (contains? [1 2 3] x)
-                                    x))))))
+                                         (contains? [1 2 3] x)
+                                         x))))))
 
   (testing "contains? with domain elements"
     (is (= #{1 2 3 4} (set (m/query (fresh [(integer x)]
-                                      (contains? [(one-of 1 2) (one-of 3 4)] x)
-                                      x)))))))
+                                           (contains? [(one-of 1 2) (one-of 3 4)] x)
+                                           x)))))))
 
 (deftest contains-backward
   (testing "contains? + further constraint narrows x"
     (is (= [2] (m/query (fresh [(integer x)]
-                           (contains? [1 2 3] x)
-                           (even x)
-                           x)))))
+                               (contains? [1 2 3] x)
+                               (even x)
+                               x)))))
 
   (testing "contains? with constrained x narrows bidirectionally"
     (is (= #{1 3} (set (m/query (fresh [(integer x)]
-                                  (contains? [1 2 3] x)
-                                  (odd x)
-                                  x)))))))
+                                       (contains? [1 2 3] x)
+                                       (odd x)
+                                       x)))))))
 
 (deftest contains-with-concrete
   (testing "contains? with literal element"
     (is (= [2] (m/query (fresh [(integer x)]
-                           (contains? [1 2 3] x)
-                           (= x 2)
-                           x)))))
+                               (contains? [1 2 3] x)
+                               (= x 2)
+                               x)))))
 
   (testing "contains? contradiction — element not in vector"
     (is (thrown? Exception
-          (m/query (fresh [(integer x)]
-                     (contains? [1 2 3] x)
-                     (= x 5)
-                     x))))))
+                 (m/query (fresh [(integer x)]
+                                 (contains? [1 2 3] x)
+                                 (= x 5)
+                                 x))))))
 
 (deftest contains-single-element
   (testing "contains? on single-element vector"
     (is (= [42] (m/query (fresh [(integer x)]
-                            (contains? [42] x)
-                            x))))))
+                                (contains? [42] x)
+                                x))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; index-of — inverse of nth
@@ -637,27 +637,27 @@
 
   (testing "index-of with domain element"
     (is (= #{0 1 2} (set (m/query (fresh [(integer x)]
-                                    (index-of [1 2 3] x))))))))
+                                         (index-of [1 2 3] x))))))))
 
 (deftest index-of-with-constraint
   (testing "index-of constrained by result"
     ;; If we constrain result to 0, then x must be 10
     (is (= [10] (m/query (fresh [(integer x) (integer i)]
-                            (= i (index-of [10 20 30] x))
-                            (= i 0)
-                            x)))))
+                                (= i (index-of [10 20 30] x))
+                                (= i 0)
+                                x)))))
 
   (testing "index-of constrained by element"
     ;; If x is 20, result must be 1
     (is (= [1] (m/query (fresh [(integer x) (integer i)]
-                           (= i (index-of [10 20 30] x))
-                           (= x 20)
-                           i))))))
+                               (= i (index-of [10 20 30] x))
+                               (= x 20)
+                               i))))))
 
 (deftest index-of-contradiction
   (testing "index-of throws when element not found"
     (is (thrown? Exception
-          (m/query (index-of [1 2 3] 99))))))
+                 (m/query (index-of [1 2 3] 99))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; min-of — minimum element of vector
@@ -689,8 +689,8 @@
 
   (testing "min-of narrows elements — all must be >= result"
     (is (= [2] (m/query (fresh [(integer x)]
-                           (= x (min-of [2 5 3]))
-                           x))))))
+                               (= x (min-of [2 5 3]))
+                               x))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; max-of — maximum element of vector
@@ -723,8 +723,8 @@
 
   (testing "max-of narrows elements — all must be <= result"
     (is (= [5] (m/query (fresh [(integer x)]
-                           (= x (max-of [2 5 3]))
-                           x))))))
+                               (= x (max-of [2 5 3]))
+                               x))))))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; sort — sorted permutation of vector
@@ -843,23 +843,23 @@
     ;; Only valid input: some permutation of [1 2 3]
     ;; Sorted result is always [1 2 3] (may appear multiple times for different input permutations)
     (let [results (m/query (fresh [(integer a) (integer b) (integer c)]
-                             (= a (one-of 1 2 3))
-                             (= b (one-of 1 2 3))
-                             (= c (one-of 1 2 3))
-                             (distinct [a b c])
-                             (sort [a b c])))]
+                                  (= a (one-of 1 2 3))
+                                  (= b (one-of 1 2 3))
+                                  (= c (one-of 1 2 3))
+                                  (distinct [a b c])
+                                  (sort [a b c])))]
       (is (= #{[1 2 3]} (set results)))))
 
   (testing "sort + distinct + constrain last"
     ;; Elements from {1,2,3,4}, all different, sorted last = 4
     (let [results (m/query (fresh [(integer a) (integer b) (integer c)]
-                             (= a (one-of 1 2 3 4))
-                             (= b (one-of 1 2 3 4))
-                             (= c (one-of 1 2 3 4))
-                             (distinct [a b c])
-                             (let [s (sort [a b c])]
-                               (= (last s) 4)
-                               s)))]
+                                  (= a (one-of 1 2 3 4))
+                                  (= b (one-of 1 2 3 4))
+                                  (= c (one-of 1 2 3 4))
+                                  (distinct [a b c])
+                                  (let [s (sort [a b c])]
+                                    (= (last s) 4)
+                                    s)))]
       ;; last must be 4, first two from {1,2,3} all different
       ;; → [1,2,4] [1,3,4] [2,3,4]
       (is (= #{[1 2 4] [1 3 4] [2 3 4]} (set results))))))
@@ -870,3 +870,75 @@
                              (sort v)))]
       ;; Inputs always have first < second, so sort = identity
       (is (= #{[1 3] [1 4] [2 3] [2 4]} (set results))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; sort-by — sorted permutation by key function
+;; ════════════════════════════════════════════════════════════════
+
+(deftest sort-by-basic
+  (testing "sort-by with negation key — descending order"
+    (is (= [[3 2 1]] (m/query (sort-by (fn [x] (- 0 x)) [1 3 2])))))
+
+  (testing "sort-by with identity — same as sort"
+    (is (= [[1 2 3]] (m/query (sort-by (fn [x] x) [3 1 2])))))
+
+  (testing "sort-by single element"
+    (is (= [[5]] (m/query (sort-by (fn [x] (- 0 x)) [5])))))
+
+  (testing "sort-by two elements"
+    (is (= [[3 1]] (m/query (sort-by (fn [x] (- 0 x)) [1 3]))))))
+
+(deftest sort-by-with-domains
+  (testing "sort-by negation with disjoint domains"
+    ;; sort-by (- x) puts larger values first
+    ;; input: [(one-of 1 2) (one-of 5 6)]
+    ;; keys: [(one-of -1 -2) (one-of -5 -6)]
+    ;; sorted by key: second element first (more negative key is smaller)
+    ;; so result = [elem-with-larger-key, elem-with-smaller-key] = [second, first]
+    (let [results (m/query (sort-by (fn [x] (- 0 x)) [(one-of 1 2) (one-of 5 6)]))]
+      ;; All results should be in descending order
+      (is (every? (fn [[a b]] (>= a b)) results))
+      ;; Expected: [5,1] [5,2] [6,1] [6,2]
+      (is (= #{[5 1] [5 2] [6 1] [6 2]} (set results)))))
+
+  (testing "sort-by with overlapping key domains"
+    ;; sort-by (+ x 10) with overlapping inputs — monotonic f, same order as sort
+    ;; Input combos: (1,2)→[1,2] (1,4)→[1,4] (3,2)→[2,3] (3,4)→[3,4]
+    (let [results (m/query (sort-by (fn [x] (+ x 10)) [(one-of 1 3) (one-of 2 4)]))]
+      (is (every? (fn [[a b]] (<= a b)) results))
+      (is (= #{[1 2] [1 4] [2 3] [3 4]} (set results))))))
+
+(deftest sort-by-backward-propagation
+  (testing "constraining sort-by output narrows input"
+    ;; sort-by negation, constrain first of result = 6
+    ;; first of descending sort = maximum of input → one element must be 6
+    (let [results (m/query (let [v [(one-of 4 5 6) (one-of 4 5 6)]]
+                             (= (nth (sort-by (fn [x] (- 0 x)) v) 0) 6)
+                             v))]
+      ;; At least one element must be 6
+      (is (every? (fn [[a b]] (or (= a 6) (= b 6))) results)))))
+
+(deftest sort-by-identity-matches-sort
+  (testing "sort-by identity produces same results as sort"
+    (let [v-expr '[(one-of 1 3) (one-of 2 4)]
+          sort-results (set (m/query (sort [(one-of 1 3) (one-of 2 4)])))
+          sort-by-results (set (m/query (sort-by (fn [x] x) [(one-of 1 3) (one-of 2 4)])))]
+      (is (= sort-results sort-by-results)))))
+
+(deftest sort-by-non-injective-key
+  (testing "sort-by with modular key function"
+    ;; (sort-by (fn [x] (mod x 10)) [21 12 33])
+    ;; keys: 1 2 3 → sorted order: [21 12 33]
+    (is (= [[21 12 33]] (m/query (sort-by (fn [x] (mod x 10)) [21 12 33])))))
+
+  (testing "sort-by where elements share a key"
+    ;; [31 12 21] → keys: 1,2,1 → sorted by key: [31,21,12] or [21,31,12]
+    ;; (equal keys can appear in either order)
+    (let [results (m/query (sort-by (fn [x] (mod x 10)) [31 12 21]))]
+      ;; All results should have keys in non-decreasing order
+      (is (every? (fn [[a b c]]
+                    (and (<= (mod a 10) (mod b 10))
+                         (<= (mod b 10) (mod c 10))))
+                  results))
+      ;; Both orderings of the key-1 elements are valid
+      (is (= #{[21 31 12] [31 21 12]} (set results))))))

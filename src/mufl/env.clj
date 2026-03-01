@@ -1432,7 +1432,7 @@
                            env (reduce (fn [e i]
                                          (let [e (tree/cd (tree/root e) my-pos)
                                                result (bind/bind e (list '<= (nth result-syms i)
-                                                                        (nth result-syms (inc i))))]
+                                                                         (nth result-syms (inc i))))]
                                            (tree/root result)))
                                        env (range (dec n)))
                            env (tree/cd env my-pos)
@@ -1470,11 +1470,117 @@
                ;; Add ordering constraints between consecutive elements
                (let [env (reduce (fn [e i]
                                    (let [result (bind/bind e (list '<= (list 'nth vec-expr i)
-                                                                  (list 'nth vec-expr (inc i))))]
+                                                                   (list 'nth vec-expr (inc i))))]
                                      (tree/cd (tree/root result) my-pos)))
                                  env (range (dec n)))]
                  ;; Return the original vector (linked)
                  (assoc env :link (tree/position vec-node))))))})
+
+      ;; ── sort-by: sorted permutation by key function ─────────
+      ;; (sort-by f v) → new vector that is a permutation of v, sorted by
+      ;; (f elem) in non-decreasing order.
+      ;;
+      ;; Architecture (3 independent constraints working together):
+      ;; 1. :perm constraint — rv is a permutation of v (multiset equality)
+      ;; 2. f applied to each rv[i] → fk[i] (creates constraint graph links)
+      ;; 3. <= chain on fk values — keys are non-decreasing
+      ;;
+      ;; When the solver splits on rv variables:
+      ;; - :perm ensures values come from input multiset
+      ;; - f propagates rv→fk through the constraint graph
+      ;; - <= chain enforces key ordering on fk
+      ;; This gives tight bidirectional propagation without needing
+      ;; the element constraint or key-value coupling heuristics.
+      (defop 'sort-by
+        {:construct
+         (fn [env [f-expr vec-expr]]
+           (let [;; Bind function to temp name (like map does)
+                 f-sym (gensym "sortbyfn__")
+                 env (bind/bind env f-sym f-expr)
+                 ;; Resolve the collection
+                 [env vec-node] (bind/resolve-collection env vec-expr :vector "sort-by")
+                 my-pos (tree/position env)
+                 children (tree/int-children vec-node)
+                 n (count children)]
+             (if (zero? n)
+               ;; Empty vector → return empty vector
+               (bind/bind env [])
+               (if (= 1 n)
+                 ;; Single element → return vector linked to original element
+                 (bind/bind env [(list 'nth vec-expr 0)])
+                 ;; Collect input value paths and domains
+                 (let [val-paths (mapv #(tree/position (bind/resolve %)) children)
+                       val-doms (mapv #(bind/domain-of (tree/root env) %) val-paths)
+                       val-union (reduce dom/unite dom/void val-doms)
+                       all-ground? (every? dom/singleton? val-doms)]
+
+                   (or
+                     ;; Fast path: all inputs ground + all keys distinct → unique permutation
+                    (when all-ground?
+                      (let [key-syms (mapv (fn [_] (gensym "sortby_k__")) (range n))
+                            env-with-keys (reduce (fn [e [i ksym]]
+                                                    (let [e (tree/cd (tree/root e) my-pos)]
+                                                      (bind/bind e ksym (list f-sym (list 'nth vec-expr i)))))
+                                                  env (map-indexed vector key-syms))
+                            env-with-keys (tree/cd (tree/root env-with-keys) my-pos)
+                            key-paths (mapv (fn [sym]
+                                              (tree/position
+                                               (bind/resolve (tree/find env-with-keys [sym]))))
+                                            key-syms)
+                            key-doms (mapv #(bind/domain-of (tree/root env-with-keys) %) key-paths)
+                            key-vals (mapv dom/singleton-val key-doms)
+                            all-keys-distinct? (= (count key-vals) (count (set key-vals)))]
+                        (when all-keys-distinct?
+                           ;; Unique permutation — compute directly
+                          (let [indexed (map-indexed (fn [i k] [k i]) key-vals)
+                                sorted-indices (mapv second (sort-by first indexed))
+                                result-exprs (mapv (fn [j] (list 'nth vec-expr j))
+                                                   sorted-indices)]
+                            (bind/bind env (vec result-exprs))))))
+
+                     ;; General case: build constraint network
+                     ;; Step 1: Create n fresh result value variables
+                    (let [rv-syms (mapv (fn [_] (gensym "sortby_rv__")) (range n))
+                          env (reduce (fn [e sym]
+                                        (let [e (tree/cd (tree/root e) my-pos)
+                                              e (bind/bind e sym '(integer))
+                                              sym-path (tree/position (bind/resolve (tree/find e [sym])))
+                                              e (bind/set-domain (tree/root e) sym-path val-union)]
+                                          e))
+                                      env rv-syms)
+                          env (tree/cd env my-pos)
+
+                           ;; Step 2: Apply f to each result variable → creates key constraint links
+                           ;; fk[i] = (f rv[i]) — this builds the constraint graph: rv[i] → f → fk[i]
+                          fk-syms (mapv (fn [_] (gensym "sortby_fk__")) (range n))
+                          env (reduce (fn [e [i fksym]]
+                                        (let [e (tree/cd (tree/root e) my-pos)]
+                                          (bind/bind e fksym (list f-sym (nth rv-syms i)))))
+                                      env (map-indexed vector fk-syms))
+                          env (tree/cd (tree/root env) my-pos)
+
+                           ;; Step 3: Add ordering constraints on keys: fk[0] <= fk[1] <= ... <= fk[n-1]
+                          env (reduce (fn [e i]
+                                        (let [e (tree/cd (tree/root e) my-pos)
+                                              result (bind/bind e (list '<= (nth fk-syms i)
+                                                                        (nth fk-syms (inc i))))]
+                                          (tree/root result)))
+                                      env (range (dec n)))
+                          env (tree/cd env my-pos)
+
+                           ;; Step 4: Add :perm constraint between input values and rv
+                          rv-paths (mapv (fn [sym]
+                                           (tree/position
+                                            (bind/resolve (tree/find env [sym]))))
+                                         rv-syms)
+                          perm-refs (into val-paths rv-paths)
+                          env-root (bind/add-constraint (tree/root env) :perm perm-refs my-pos)]
+
+                      (if env-root
+                         ;; Build result vector from rv symbols
+                        (let [env (tree/cd env-root my-pos)]
+                          (bind/bind env (vec rv-syms)))
+                        (throw (ex-info "Contradiction in sort-by" {:f f-expr :vec vec-expr}))))))))))})
 
       ;; ── update: apply function to value at key ──────────────
       ;; (update m :k f) → new map where (:k m) is replaced by (f (:k m)).

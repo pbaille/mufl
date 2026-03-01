@@ -717,6 +717,113 @@
                                       input-narrowings
                                       singleton-narrowings))))))
 
+(defn- narrow-perm
+  "Narrow for permutation constraint (multiset equality, NO ordering).
+   refs: [input-path-0 ... input-path-(n-1) output-path-0 ... output-path-(n-1)]
+   Length is always 2*n.
+
+   Enforces: output is a permutation of input (same multiset of values).
+   - Forward:  each output[i] ∈ union(input domains)
+   - Backward: each input[j] ∈ union(output domains)
+   - Singleton counting: if value v appears k times in input singletons,
+     then exactly k output positions must hold v
+   - Ground verification: when both sides fully ground, verify multiset equality"
+  [env refs]
+  (let [refs (vec refs)
+        n (/ (count refs) 2)
+        input-paths (subvec refs 0 n)
+        output-paths (subvec refs n)
+
+        input-doms (mapv #(domain-of env %) input-paths)
+        output-doms (mapv #(domain-of env %) output-paths)
+
+        ;; Check if all inputs and outputs are ground
+        input-singletons (mapv #(when (dom/singleton? %) (dom/singleton-val %)) input-doms)
+        output-singletons (mapv #(when (dom/singleton? %) (dom/singleton-val %)) output-doms)
+        all-input-ground? (every? some? input-singletons)
+        all-output-ground? (every? some? output-singletons)]
+
+    (if (and all-input-ground? all-output-ground?)
+      ;; Both sides ground — verify multiset equality
+      (if (= (frequencies input-singletons) (frequencies output-singletons))
+        {:env env :changed []}
+        nil) ;; contradiction
+
+      ;; General case: propagate via domain unions + singleton counting
+      (let [input-union (reduce dom/unite dom/void input-doms)
+            output-union (reduce dom/unite dom/void output-doms)
+
+            ;; Forward: output[i] ⊆ input-union (no ordering bounds — pure perm)
+            output-narrowings
+            (keep-indexed
+             (fn [i opath]
+               (let [od (nth output-doms i)
+                     narrowed (dom/intersect od input-union)]
+                 (when-not (= narrowed od)
+                   [opath narrowed])))
+             output-paths)
+
+            ;; Backward: input[j] ⊆ output-union
+            input-narrowings
+            (keep-indexed
+             (fn [j ipath]
+               (let [id (nth input-doms j)
+                     narrowed (dom/intersect id output-union)]
+                 (when-not (= narrowed id)
+                   [ipath narrowed])))
+             input-paths)
+
+            ;; Singleton counting from inputs: {value → count}
+            input-val-counts (reduce (fn [acc d]
+                                       (if (dom/singleton? d)
+                                         (update acc (dom/singleton-val d) (fnil inc 0))
+                                         acc))
+                                     {} input-doms)
+
+            ;; If value v appears k times as input singletons and exactly
+            ;; k output positions can hold v, those positions must be v
+            singleton-narrowings
+            (mapcat
+             (fn [[v cnt]]
+               (let [candidate-indices (keep-indexed
+                                        (fn [i od]
+                                          (when (dom/contains-val? od v) i))
+                                        output-doms)]
+                 (when (= (count candidate-indices) cnt)
+                   (keep (fn [i]
+                           (let [od (nth output-doms i)]
+                             (when-not (dom/singleton? od)
+                               [(nth output-paths i) (dom/single v)])))
+                         candidate-indices))))
+             input-val-counts)
+
+            ;; Also count from outputs back to inputs
+            output-val-counts (reduce (fn [acc d]
+                                        (if (dom/singleton? d)
+                                          (update acc (dom/singleton-val d) (fnil inc 0))
+                                          acc))
+                                      {} output-doms)
+
+            reverse-singleton-narrowings
+            (mapcat
+             (fn [[v cnt]]
+               (let [candidate-indices (keep-indexed
+                                        (fn [j id]
+                                          (when (dom/contains-val? id v) j))
+                                        input-doms)]
+                 (when (= (count candidate-indices) cnt)
+                   (keep (fn [j]
+                           (let [id (nth input-doms j)]
+                             (when-not (dom/singleton? id)
+                               [(nth input-paths j) (dom/single v)])))
+                         candidate-indices))))
+             output-val-counts)]
+
+        (apply-narrowings env (concat output-narrowings
+                                      input-narrowings
+                                      singleton-narrowings
+                                      reverse-singleton-narrowings))))))
+
 (def narrowing-fns
   {:< narrow-lt
    :> narrow-gt
@@ -735,7 +842,8 @@
    :index-of narrow-index-of
    :min-of narrow-min-of
    :max-of narrow-max-of
-   :sorted-perm narrow-sorted-perm})
+   :sorted-perm narrow-sorted-perm
+   :perm narrow-perm})
 
 ;; ════════════════════════════════════════════════════════════════
 ;; Propagation engine
