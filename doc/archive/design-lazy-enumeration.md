@@ -1,3 +1,7 @@
+> **📦 ARCHIVED** — Moved to `doc/archive/` on 2026-02-28. The actual implementation uses a simpler
+> stack-based DFS in `search.clj` with `grounded?`, `split`, and `validate-ground`. The `SearchState`,
+> `solve-step`, and choice-point architecture described here were never implemented.
+
 # Design: Lazy Enumeration & Infinite Domains
 
 > **⚠️ HISTORICAL DOCUMENT**

@@ -4,7 +4,7 @@ This document explains how mufl's domain algebra works internally: the data repr
 
 For the user-facing language, see `doc/introduction.md`. For the tree architecture and bind mechanics, see `doc/design.md`.
 
-The implementation lives in `src/mufl/domain.clj` (~590 lines). The tests in `test/mufl/domain_test.clj` serve as executable examples for everything described here.
+The implementation lives in `src/mufl/domain.clj` (~1276 lines). The tests in `test/mufl/domain_test.clj` serve as executable examples for everything described here.
 
 ---
 
@@ -514,7 +514,7 @@ Subtract on composites is approximate for superset/overlap cases — the precise
 
 When the mufl runtime encounters a composite type constructor — whether from `(narrow v (vector-of integer))`, a `def` schema like `(def IntVec (vector-of integer))`, or `=` unification between a variable and a composite domain — it builds a composite domain and applies it structurally.
 
-The mechanism is `apply-composite-constraint` in `bind.clj`. It walks the collection node's children and intersects each element's domain with the appropriate part of the composite domain:
+The mechanism is `apply-composite-constraint` in `narrow.clj`. It walks the collection node's children and intersects each element's domain with the appropriate part of the composite domain:
 
 - For `vector-of`: every child gets intersected with the element domain
 - For `tuple`: each child at position *i* gets intersected with `(nth elements i)`

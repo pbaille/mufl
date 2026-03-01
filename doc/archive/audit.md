@@ -1,3 +1,8 @@
+> **📦 ARCHIVED** — Moved to `doc/archive/` on 2026-02-28. This audit was conducted at 128 tests / 208 assertions.
+> The codebase has since grown to 491 tests / 1440 assertions. Many issues identified here (stale link domains,
+> derived node flag, DRY relational wrappers, arity checking) have been fixed. File structure has changed
+> significantly (bind.clj was split into bind.clj, narrow.clj, pattern.clj, schema.clj).
+
 # Audit: mufl Phases 1 & 2 — Edge Cases, Quality, Hindsight
 
 **Date:** 2026-02-24  

@@ -1,3 +1,8 @@
+> **📦 ARCHIVED** — Moved to `doc/archive/` on 2026-02-28. Recursion with ground arguments now works
+> via multi-branch `fn` with pattern matching (tested in `recursion_test.clj`). The approaches described
+> here (search-time unfolding, bind-time enumeration, annotation-based opt-in) were not implemented.
+> Non-ground recursive args remain a limitation.
+
 # Design: Non-Ground Recursion
 
 ## Current State

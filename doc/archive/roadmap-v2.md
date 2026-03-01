@@ -1,3 +1,12 @@
+> **📦 ARCHIVED** — Moved to `doc/archive/` on 2026-02-28. Status at archival:
+> - Phase 2a quick wins: ✅ ALL DONE (stale link domain, arity check, derived flag, DRY wrappers)
+> - Phase 2b completion: ✅ DONE (collections, destructuring, HOFs, def/defn, callable domains)
+> - Phase 2.5 hardening: ⬜ Scoped constraints not done; recursion works for ground args
+> - Phase 3 domains: Partially done (vector-of, tuple, map-of, narrow, callable domains work)
+> - Codebase grew from 128 tests / 208 assertions to 491 tests / 1440 assertions
+> - File structure changed: bind.clj split into bind.clj, narrow.clj, pattern.clj, schema.clj
+> - env.clj split into 8 `register-*` groups
+
 # mufl Roadmap v2 — Post-Audit Assessment
 
 **Date:** 2026-02-25  

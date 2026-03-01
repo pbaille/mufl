@@ -195,4 +195,4 @@ The mental model hasn't changed — you still describe constraints and let the s
 
 ---
 
-For the full constraint language, see [Introduction](introduction.md). For internal design details, see [Design: Lazy Enumeration](design-lazy-enumeration.md).
+For the full constraint language, see [Introduction](introduction.md). For the domain algebra internals, see [Domain Algebra](domain-algebra.md). For historical design notes on lazy enumeration, see [Design: Lazy Enumeration](archive/design-lazy-enumeration.md).

@@ -9,7 +9,7 @@ mufl fuses FL's constraint-logic semantics with immucode's immutable environment
 A **domain** is the set of possible values a name can take.
 
 - `(single 1)` — exactly one value. This **is** the value `1`. No separate `:value` field needed.
-- `(union [1 2 3])` — could be 1, 2, or 3. Not yet determined.
+- `(finite #{1 2 3})` — could be 1, 2, or 3. Not yet determined.
 - `integer` — some integer. Open domain.
 - `any` — we know nothing yet.
 - `void` — empty domain. Contradiction.
@@ -66,7 +66,7 @@ Every node in the tree can carry any combination of these fields:
  ::tree/name    <this-node-name>
 
  ;; === The content — one field, not two ===
- :domain        <domain>          ;; (single 1), (union [1 2 3]), integer, any, void, ...
+ :domain        <domain>          ;; (single 1), (finite #{1 2 3}), integer, any, void, ...
 
  ;; === Navigation ===
  :link          [path to target]  ;; this node IS that node (union-find)
@@ -85,7 +85,7 @@ Every node in the tree can carry any combination of these fields:
  :destruct      (fn [env args value])
 
  ;; === Flags ===
- :local         true              ;; locally scoped (not from base env)
+ :derived       true              ;; intermediate expression/literal node (skip during search labeling)
  :primitive     true              ;; marks base-env nodes
  }
 ```
@@ -134,12 +134,14 @@ The returned tree has been:
 
      (symbol? expr)
      (if-let [found (tree/find env [expr])]
-       (assoc env :link (tree/position found))
-       (bind env (list 'external expr)))
+       (let [found-target (narrow/resolve found)]
+         (assoc env :link (tree/position found-target)))
+       (throw (ex-info (str "Unresolved symbol: " expr) {:sym expr})))
 
      (seq? expr)
      (let [[head & args] expr
-           node (tree/find env [head])]
+           raw-node (tree/find env [head])
+           node (if (:link raw-node) (narrow/resolve raw-node) raw-node)]
        (if-let [f (:bind node)]
          (f env args)
          (throw (ex-info (str "No :bind for: " head) {:head head}))))
@@ -177,7 +179,7 @@ When a constraint node is added to the tree, propagation runs:
 5. Repeat until no domain changes (fixpoint)
 ```
 
-This is **arc consistency** embedded in the tree.
+This is **arc consistency** embedded in the tree. The propagation engine lives in `narrow.clj`:
 
 ```clojure
 (defn propagate
@@ -248,21 +250,26 @@ The domain system extends immucode's type system with operations needed for cons
 ```clojure
 ;; Construction
 (single v)              ;; exactly one value
-(union [v1 v2 ...])     ;; finite enumeration
-(between lo hi)         ;; integer range (for FD-style)
+(finite #{v1 v2 ...})   ;; finite enumeration (normalizes: 0→void, 1→single)
+(int-range lo hi)       ;; integer range (FD-style, lazy — not materialized)
 integer, number, string, keyword, ...  ;; open primitive domains
 any                     ;; everything
 void                    ;; nothing (contradiction)
 
+;; Composite domains
+(vector-of-dom d)              ;; homogeneous vectors
+(tuple-dom [d1 d2 ...])        ;; heterogeneous fixed-length vectors
+(map-of-dom kd vd)             ;; homogeneous maps
+(map-fields-dom {:k1 d1 ...})  ;; structural map (specific keys)
+
 ;; Singleton check — "is this a value?"
-(singleton? (single 1))      ;; → true, value is 1
-(singleton? (union [1 2 3])) ;; → false
-(singleton? integer)         ;; → false
+(singleton? (single 1))        ;; → true, value is 1
+(singleton? (finite #{1 2 3})) ;; → false
+(singleton? integer)           ;; → false
 
 ;; Algebra
 (intersect d1 d2)   ;; narrowing — what's in both
 (unite d1 d2)       ;; widening — what's in either
-(complement d)      ;; negation
 (subtract d1 d2)    ;; d1 minus d2
 
 ;; For ordered domains (constraint propagation)
@@ -271,8 +278,8 @@ void                    ;; nothing (contradiction)
 (domain-below d v)  ;; values in d that are < v
 (domain-above d v)  ;; values in d that are > v
 
-;; Comparison (from immucode.types)
-(compare d1 d2) → :equal | :bigger | :smaller | :distinct | :overlap
+;; Relation (the single primitive underlying the algebra)
+(relate d1 d2) → :equal | :superset | :subset | :disjoint | :overlap
 ```
 
 ## Forms as Tree Nodes
@@ -284,7 +291,7 @@ Each form becomes a node in the base environment with a `:bind` function.
 ```clojure
 {:bind
  (fn [env args]
-   (assoc env :domain (union args)))}
+   (assoc env :domain (finite (set args))))}
 ```
 
 The simplest form. No constraints needed — it just sets the domain.
@@ -384,12 +391,12 @@ The found node's `:domain`, `:link`, or `:bind` field tells us what kind of thin
 
 ### Step 1: bind `x`
 
-`(one-of 1 2 3 4 5)` → node at `[:x]` with `{:domain (union [1 2 3 4 5])}`
+`(one-of 1 2 3 4 5)` → node at `[:x]` with `{:domain (finite #{1 2 3 4 5})}`
 
 Tree state:
 ```
 [scope]
-  └─ x  {:domain (union [1 2 3 4 5])}
+  └─ x  {:domain (finite #{1 2 3 4 5})}
 ```
 
 ### Step 2: bind `y`
@@ -397,8 +404,8 @@ Tree state:
 Same. Tree state:
 ```
 [scope]
-  ├─ x  {:domain (union [1 2 3 4 5])}
-  └─ y  {:domain (union [1 2 3 4 5])}
+  ├─ x  {:domain (finite #{1 2 3 4 5})}
+  └─ y  {:domain (finite #{1 2 3 4 5})}
 ```
 
 ### Step 3: bind `(< x y)`
@@ -410,8 +417,8 @@ Creates constraint node, then propagates:
 
 ```
 [scope]
-  ├─ x   {:domain (union [1 2 3 4]), :watched-by #{c0}}
-  ├─ y   {:domain (union [2 3 4 5]), :watched-by #{c0}}
+  ├─ x   {:domain (finite #{1 2 3 4}), :watched-by #{c0}}
+  ├─ y   {:domain (finite #{2 3 4 5}), :watched-by #{c0}}
   └─ c0  {:constraint :<, :refs [x y]}
 ```
 
@@ -429,8 +436,8 @@ Then `(= ... 6)` unifies the sum with `(single 6)`:
 
 ```
 [scope]
-  ├─ x    {:domain (union [1 2]), :watched-by #{c0 c2}}
-  ├─ y    {:domain (union [4 5]), :watched-by #{c0 c2}}
+  ├─ x    {:domain (finite #{1 2}), :watched-by #{c0 c2}}
+  ├─ y    {:domain (finite #{4 5}), :watched-by #{c0 c2}}
   ├─ c0   {:constraint :<, :refs [x y]}
   ├─ sum  {:domain (single 6), :watched-by #{c1}}
   ├─ c1   {:constraint :=, :refs [sum six]}
@@ -508,30 +515,22 @@ Example: `(ks a b)` in pattern position destructures a map:
 
 ## Domains as First-Class Nodes
 
-A domain definition creates a node carrying both `:bind` and `:destruct`:
+Domain schemas are created with `def` and applied with `narrow` or by calling the domain directly (callable domains):
 
 ```clojure
-(defdomain Person {:name string :age integer})
+(def person {:name string :age (between 0 150)})
+
+;; narrow applies structural constraints
+(narrow p person)
+
+;; Callable domains: calling a domain ≡ (narrow arg domain)
+(person p)
+
+;; Works in pattern position too
+(let [(person {:name n :age a}) p] [n a])
 ```
 
-Creates node at `[:Person]`:
-
-```clojure
-{:domain {:name string, :age integer}
-
- ;; As constraint: (Person p) narrows p's keys
- :bind
- (fn [env [target-expr]]
-   (let [target (resolve-to-node env target-expr)]
-     ;; intersect each key's domain
-     ...))
-
- ;; As destructuring: (let [(Person {:name n}) p] ...)
- :destruct
- (fn [env args value]
-   ;; destructure + domain constraints
-   ...)}
-```
+Type constructors (`vector-of`, `tuple`, `map-of`) also produce callable domain values. The resolution and application logic lives in `schema.clj` (`resolve-domain-schema`, `apply-domain-constraint`), while the structural walking lives in `narrow.clj` (`apply-composite-constraint`).
 
 ## Tree Operations
 
@@ -549,34 +548,22 @@ Reuses immucode.tree's core ideas:
 (children tree)           ;; child nodes
 ```
 
-## Implementation Roadmap
+## Current File Structure
 
-### Phase 1: Foundation
-1. **`mufl.domain`** — Domain algebra: single, union, intersect, complement, void, singleton?, compare, min/max, above/below
-2. **`mufl.tree`** — Tree navigation: cd, parent, root, find, put, ensure-path, position, at
-3. **`mufl.bind`** — Core bind + propagation engine
-4. **`mufl.env`** — Base environment: one-of, let, and, =, <, >, +, -
-5. **`mufl.search`** — Search strategies: grounded?, split, validate-ground, DFS/BFS
-6. **`mufl.show`** — Tree → mufl code serialization (extract-value, extract-bindings, print-solution)
-7. **`mufl.core`** — `query` entry point (bind + search)
-8. **Tests** — End-to-end: `(query (let [x (one-of 1 2 3)] (and (> x 1) x)))` → `(2 3)`
+```
+src/mufl/
+  domain.clj   (1276 LOC)  Domain algebra: kinds, relate, intersect/unite/subtract, step, split
+  env.clj      (955 LOC)   Base environment: 8 register-* groups (core forms, relational,
+                            arithmetic, type system, definitions, collections, destructuring, predicates)
+  bind.clj     (480 LOC)   Core bind + constraint registration
+  narrow.clj   (520 LOC)   Constraint narrowing functions + propagation engine
+  pattern.clj  (479 LOC)   Pattern-position destructuring (bind-pattern)
+  schema.clj   (239 LOC)   Domain resolution + structural constraint application
+  search.clj   (368 LOC)   Search: grounded?, split, validate-ground, extract-value, extract-bindings
+  tree.clj     (133 LOC)   Immutable navigable tree
+  show.clj     (383 LOC)   Tree → mufl code serialization
+  core.clj     (246 LOC)   Entry points: query, query+, query1, query-lazy, simplify
+  showcase.clj (842 LOC)   Working examples as tests
+```
 
-### Phase 2: Full Form Coverage
-9. All relational constraints: !=, <=, >=, distinct
-10. All arithmetic: *, /, mod
-11. or, if, when, cond
-12. Collections: vector, hash-map, keyword access
-13. Destructuring: ks, as, or, &, quote, list
-14. HOFs: map, reduce
-15. defc (function definitions as tree nodes)
-
-### Phase 3: Domains
-16. defdomain macro
-17. Domain-as-constraint
-18. Domain-as-destructuring
-19. Domain composition
-
-### Phase 4: Optimization & Types
-20. maximize / minimize
-21. Type transitions for builtins
-22. Cross-scope type propagation
+491 tests, 1440 assertions, 0 failures.
