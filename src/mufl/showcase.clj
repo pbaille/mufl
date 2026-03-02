@@ -830,6 +830,228 @@
   ;=> [[120 720]]
   )
 ;; ════════════════════════════════════════════════════════════════
+;; 23. `assoc` — immutable update at index
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `assoc` replaces a vector element at a literal integer index.
+;; The updated element can be uncertain — enumeration still works.
+
+(comment
+
+  ;; Ground update:
+  (query (assoc [1 2 3] 1 99))
+  ;=> [[1 99 3]]
+
+  ;; Uncertain replacement value:
+  (query (let [n (one-of 10 20 30)]
+           (assoc [1 2 3] 1 n)))
+  ;=> [[1 10 3] [1 20 3] [1 30 3]]
+
+  ;; Constraint on the new value:
+  (query (let [n (one-of 10 20 30)]
+           (and (> n 15)
+                (assoc [1 2 3] 1 n))))
+  ;=> [[1 20 3] [1 30 3]]
+  )
+
+;; ════════════════════════════════════════════════════════════════
+;; 24. `every`, `some` — universal and existential quantifiers
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `every` applies a predicate to ALL elements — it's a narrowing
+;; constraint that eliminates each element value that fails.
+;;
+;; `some` checks that at least ONE element CAN satisfy the
+;; predicate. It throws at bind time if no element domain can.
+
+(comment
+
+  ;; every: narrow each element to satisfy the predicate
+  (query (let [v [(one-of 1 2 3 4) (one-of 10 20 30 40)]]
+           (every (fn [x] (> x 2)) v)
+           v))
+  ;=> [[3 10] [3 20] [3 30] [3 40] [4 10] [4 20] [4 30] [4 40]]
+  ;; 1 and 2 were eliminated from v[0]; v[1] was already fine.
+
+  ;; every with a named predicate:
+  (query (let [v [(one-of 1 2 3) (one-of 1 2 3)]]
+           (every even v)
+           v))
+  ;=> [[2 2]]
+
+  ;; every: throws at bind time if NO element value can satisfy the predicate
+  ;; (query (let [v [(one-of 1 3 5)]] (every even v) v))
+  ;; => throws "every: predicate failed on element 0"
+
+  ;; some: succeeds if at least one element domain CAN satisfy
+  (query (let [v [(one-of 1 2) (one-of 3 4)]]
+           (some (fn [x] (= x 4)) v)
+           v))
+  ;=> [[1 3] [1 4] [2 3] [2 4]]
+  ;; v[1] can be 4, so some doesn't throw.
+  ;; Note: some is an existence check at bind time — it doesn't narrow.
+  )
+
+;; ════════════════════════════════════════════════════════════════
+;; 25. `contains?`, `index-of` — membership and position
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `contains?` is a constraint: the value x must come from the
+;; vector's elements. Apply it to narrow x's domain.
+;;
+;; `index-of` returns the index (or indices) where x appears.
+;; Both directions narrow: fixing the index narrows x and vice versa.
+
+(comment
+
+  ;; contains?: narrow x to elements of v
+  (query (let [x (one-of 1 2 3 4 5 6)]
+           (contains? [2 4 6] x)
+           x))
+  ;=> [2 4 6]
+
+  ;; index-of: find all positions where value appears
+  (query (let [v [10 20 30 20]]
+           (index-of v 20)))
+  ;=> [1 3]   ;; 20 appears at positions 1 and 3
+
+  ;; index-of with uncertain needle: find where any matching value sits
+  (query (let [v [(one-of 10 20) (one-of 20 30) (one-of 10 20)]]
+           (= (index-of v 20) 1)
+           v))
+  ;=> [[10 20 10] [10 20 20] [20 20 10] [20 20 20]]
+  ;; Only vectors where position 1 is 20.
+  )
+
+;; ════════════════════════════════════════════════════════════════
+;; 26. `min-of`, `max-of` — extrema with backward propagation
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `min-of` and `max-of` return the minimum/maximum of a vector.
+;; They participate in full bidirectional constraint propagation:
+;; constraining the result narrows the element domains.
+
+(comment
+
+  ;; Ground vectors:
+  (query (min-of [3 1 4 1 5]))
+  ;=> [1]
+
+  (query (max-of [3 1 4 1 5]))
+  ;=> [5]
+
+  ;; Forward: derive the extremum from uncertain elements
+  (query (let [x (one-of 3 4 5)
+               y (one-of 1 2 3)]
+           (max-of [x y])))
+  ;=> [3 4 5]   ;; x always ≥ y here, so max = x
+
+  ;; Backward: fix the minimum, eliminate element values below it
+  (query (let [x (one-of 1 2 3 4 5)
+               y (one-of 1 2 3 4 5)]
+           (= (min-of [x y]) 3)
+           [x y]))
+  ;=> [[3 3] [4 3] [5 3] [3 4] [3 5]]
+  ;; The minimum is 3, so neither x nor y can be 1 or 2,
+  ;; and at least one of them must be exactly 3.
+
+  ;; Backward: fix the maximum
+  (query (let [x (one-of 1 2 3)
+               y (one-of 1 2 3)]
+           (= (max-of [x y]) 2)
+           [x y]))
+  ;=> [[2 1] [1 2] [2 2]]
+  )
+
+;; ════════════════════════════════════════════════════════════════
+;; 27. `sort`, `sorted?` — ordering constraints
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `sort` returns a sorted permutation of a vector.
+;; `sorted?` is a constraint: asserts elements are in order.
+;;
+;; The surprise: the sorted output is connected to the input
+;; via the permutation constraint. Constraining the sorted
+;; result narrows the input — without knowing which element
+;; ends up where.
+
+(comment
+
+  ;; Ground sort:
+  (query (sort [3 1 4 1 5 9 2 6]))
+  ;=> [[1 1 2 3 4 5 6 9]]
+
+  ;; Sort with uncertain input:
+  (query (let [x (one-of 1 2 3)]
+           (sort [x 2 1])))
+  ;=> [[1 1 2] [1 2 2] [1 2 3]]
+
+  ;; Backward: pin sorted output elements, find matching inputs
+  (query (let [x (one-of 1 2 3 4 5)
+               y (one-of 1 2 3 4 5)
+               sv (sort [x y])]
+           (and (= (nth sv 0) 2)
+                (= (nth sv 1) 4)
+                [x y])))
+  ;=> [[4 2] [2 4]]
+  ;; Exactly the two arrangements that sort to [2 4].
+
+  ;; sorted?: use as a constraint on uncertain elements
+  (query (let [x (one-of 1 2 3)
+               y (one-of 1 2 3)]
+           (and (sorted? [x y])
+                [x y])))
+  ;=> [[1 1] [1 2] [2 2] [1 3] [2 3] [3 3]]
+  ;; Only pairs where x ≤ y survive.
+
+  ;; Composition: first element of sort = min-of
+  (query (let [x (one-of 1 2 3 4 5)
+               y (one-of 1 2 3 4 5)
+               sv (sort [x y])]
+           (= (nth sv 0) 1)
+           (= (nth sv 1) 3)
+           [x y]))
+  ;=> [[3 1] [1 3]]
+  ;; Exactly the two arrangements whose sorted form is [1 3].
+  )
+
+;; ════════════════════════════════════════════════════════════════
+;; 28. `sort-by` — key-based ordering
+;; ════════════════════════════════════════════════════════════════
+;;
+;; `sort-by f v` sorts vector v by applying key function f to
+;; each element. When keys are unique, the sorted order is
+;; determined. When keys have duplicates, multiple orderings
+;; are valid — and the solver enumerates all of them.
+
+(comment
+
+  ;; Ascending by key function:
+  (query (sort-by (fn [x] x) [3 1 4 1 5]))
+  ;=> [[1 1 3 4 5]]
+
+  ;; Descending: negate the key
+  (query (sort-by (fn [x] (* -1 x)) [3 1 4 1 5]))
+  ;=> [[5 4 3 1 1]]
+
+  ;; Duplicate keys → multiple valid orderings
+  ;; (mod x 3) maps 1→1, 2→2, 4→1, 5→2
+  ;; Elements with equal keys can appear in any relative order.
+  (query (sort-by (fn [x] (mod x 3)) [4 1 5 2 6]))
+  ;=> [[6 4 1 2 5] [6 1 4 2 5] [6 4 1 5 2] [6 1 4 5 2]]
+  ;; 6 has key 0 (first), then 4/1 (key 1, interchangeable),
+  ;; then 2/5 (key 2, interchangeable).
+
+  ;; Backward: constrain the sorted output, narrow the input
+  (query (let [x (one-of 1 2 3 4 5)
+               sv (sort-by (fn [n] (* -1 n)) [x 3])]
+           (= (nth sv 0) 5)
+           x))
+  ;=> [5]
+  ;; Sorting desc with 3 in the list: only x=5 puts 5 at position 0.
+  )
+
+;; ════════════════════════════════════════════════════════════════
 ;; THE MENTAL MODEL
 ;; ════════════════════════════════════════════════════════════════
 ;;
