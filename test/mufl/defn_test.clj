@@ -126,3 +126,63 @@
                         (let [n (between 1 10)]
                           (bounded n)
                           n)))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; 8. or INSIDE defn — Fix #1 (link propagation)
+;; ════════════════════════════════════════════════════════════════
+
+(deftest or-in-defn-basic
+  (testing "or inside defn narrows param domain"
+    (is (= [1 2 3]
+           (m/query (do (defn in-set [x]
+                          (or (= x 1) (= x 2) (= x 3)))
+                        (let [n (one-of 1 2 3 4 5)]
+                          (in-set n)
+                          n)))))))
+
+(deftest or-in-defn-two-params
+  (testing "or inside defn propagates to multiple linked params"
+    ;; or is imprecise: domains unioned independently per-variable
+    (let [results (m/query (do (defn same-parity [a b]
+                                 (or (and (= (mod a 2) 0) (= (mod b 2) 0))
+                                     (and (= (mod a 2) 1) (= (mod b 2) 1))))
+                               (let [x (one-of 1 2 3 4)
+                                     y (one-of 1 2 3 4)]
+                                 (same-parity x y)
+                                 [x y])))]
+      ;; or loses correlation — all combos in unioned domains:
+      (is (some #{[2 2]} results))
+      (is (some #{[1 1]} results)))))
+
+(deftest or-in-defn-keywords
+  (testing "or inside defn with keyword constraints"
+    (is (= #{:yes :no}
+           (set (m/query (do (defn binary [x]
+                               (or (= x :yes) (= x :no)))
+                             (let [v (one-of :yes :no :maybe :unknown)]
+                               (binary v)
+                               v))))))))
+
+(deftest or-in-defn-with-outer-constraint
+  (testing "or inside defn composes with outer constraints"
+    (is (= [2 3]
+           (m/query (do (defn small [x]
+                          (or (= x 1) (= x 2) (= x 3)))
+                        (let [n (one-of 1 2 3 4 5)]
+                          (small n)
+                          (> n 1)
+                          n)))))))
+
+(deftest or-in-defn-non-overlap
+  (testing "or inside defn with arithmetic does not throw (smoke test)"
+    ;; Note: or is imprecise with complementary arithmetic branches —
+    ;; each branch's domain union cancels out, so all combos may remain.
+    ;; The key assertion is that or inside defn does not crash.
+    (let [results (m/query (do (defn non-overlap [s1 d1 s2]
+                                 (or (<= (+ s1 d1) s2)
+                                     (<= (+ s2 1) s1)))
+                               (let [a (between 0 5)
+                                     b (between 0 5)]
+                                 (non-overlap a 2 b)
+                                 [a b])))]
+      (is (seq results)))))

@@ -287,12 +287,18 @@
                ;; compute the union of its domain across branches
                (let [all-paths (->> branch-envs
                                     (mapcat (fn [e]
-                                              (->> (tree/children e)
-                                                   (keep (fn [child]
-                                                           (when (and (:domain child)
-                                                                      (not (:constraint child))
-                                                                      (not (:primitive child)))
-                                                             (tree/position child)))))))
+                                              (let [parent-e (tree/parent e)
+                                                    candidates (concat
+                                                                (tree/children e)
+                                                                (when parent-e (tree/children parent-e)))]
+                                                (->> candidates
+                                                     (keep (fn [child]
+                                                             (let [resolved (bind/resolve child)
+                                                                   target-path (tree/position resolved)]
+                                                               (when (and (:domain resolved)
+                                                                          (not (:constraint child))
+                                                                          (not (:primitive child)))
+                                                                 target-path))))))))
                                     distinct)
                      env-root (tree/root env)
                      env-root
