@@ -745,24 +745,49 @@
              (assoc env :domain (dom/single n))))})
 
       ;; ── map: apply function to each element ─────────────────
-      ;; (map f coll) — applies f to each element of the vector,
-      ;; returns a new vector with the results.
+      ;; (map f coll) or (map f coll1 coll2 ...) — applies f to each element
+      ;; of the vector(s). With multiple collections, zips them and applies f
+      ;; to each tuple of elements. All collections must have the same length.
       ;; Unrolls at bind time since collection size is known.
       (defop 'map
         {:construct
-         (fn [env [f-expr coll-expr]]
-           (let [;; Bind the function to a temp name so we can refer to it by symbol
-                 f-sym (gensym "mapfn__")
-                 env (bind/bind env f-sym f-expr)
-                 ;; Resolve the collection (use the original coll-expr for lookup)
-                 [env coll-node] (bind/resolve-collection env coll-expr :vector "map")]
-             ;; Build a vector expression: [(f e0) (f e1) ...]
-             ;; where each ei is (nth coll-expr i)
-             (let [children (tree/int-children coll-node)
-                   n (count children)
-                   ;; Build the result as a vector of function applications
+         (fn [env [f-expr & coll-exprs]]
+           (if (= 1 (count coll-exprs))
+             ;; ── Single-collection: existing behavior unchanged ────────────────────
+             (let [coll-expr (first coll-exprs)
+                   f-sym (gensym "mapfn__")
+                   env (bind/bind env f-sym f-expr)
+                   ;; Resolve the collection (use the original coll-expr for lookup)
+                   [env coll-node] (bind/resolve-collection env coll-expr :vector "map")]
+               ;; Build a vector expression: [(f e0) (f e1) ...]
+               ;; where each ei is (nth coll-expr i)
+               (let [n (count (tree/int-children coll-node))
+                     result-exprs (mapv (fn [i]
+                                          (list f-sym (list 'nth coll-expr i)))
+                                        (range n))]
+                 (bind/bind env (vec result-exprs))))
+             ;; ── Multi-collection: resolve all, verify lengths, call f with nth from each ─
+             (let [f-sym (gensym "mapfn__")
+                   env   (bind/bind env f-sym f-expr)
+                   ;; Resolve all collections accumulating env updates
+                   [env coll-data]
+                   (reduce (fn [[env acc] coll-expr]
+                             (let [[env node] (bind/resolve-collection env coll-expr :vector "map")]
+                               [env (conj acc [coll-expr node])]))
+                           [env []]
+                           coll-exprs)
+                   ;; Check all same length
+                   lengths (mapv (fn [[_ node]] (count (tree/int-children node))) coll-data)
+                   _ (when (apply not= lengths)
+                       (throw (ex-info (str "map: all collections must have the same length, got "
+                                            (clojure.string/join ", " lengths))
+                                       {:lengths lengths})))
+                   n (first lengths)
+                   ;; Build (f (nth c1 i) (nth c2 i) ...) for each i
                    result-exprs (mapv (fn [i]
-                                        (list f-sym (list 'nth coll-expr i)))
+                                        (apply list f-sym
+                                               (mapv (fn [[coll-expr _]] (list 'nth coll-expr i))
+                                                     coll-data)))
                                       (range n))]
                (bind/bind env (vec result-exprs)))))})
 

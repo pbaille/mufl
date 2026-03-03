@@ -942,3 +942,36 @@
                   results))
       ;; Both orderings of the key-1 elements are valid
       (is (= #{[21 31 12] [31 21 12]} (set results))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; map (multi-seq) — apply function to multiple collections
+;; ════════════════════════════════════════════════════════════════
+
+(deftest map-multi-seq-two-colls
+  (testing "map with 2 collections sums elements pairwise"
+    (is (= [[5 7 9]]
+           (m/query (map (fn [a b] (+ a b)) [1 2 3] [4 5 6])))))
+
+  (testing "map with 2 collections pairs elements"
+    (is (= [[[1 :a] [2 :b] [3 :c]]]
+           (m/query (map (fn [x y] [x y]) [1 2 3] [:a :b :c])))))
+
+  (testing "map with 2 bound collections"
+    (is (= [[5 7 9]]
+           (m/query (let [a [1 2 3] b [4 5 6]]
+                      (map (fn [x y] (+ x y)) a b)))))))
+
+(deftest map-multi-seq-three-colls
+  (testing "map with 3 collections sums triple-wise"
+    (is (= [[6 9 12]]
+           (m/query (map (fn [a b c] (+ a (+ b c))) [1 2 3] [2 3 4] [3 4 5])))))
+
+  (testing "map with 3 collections and bound vars"
+    (is (= [[6 9 12]]
+           (m/query (let [a [1 2 3] b [2 3 4] c [3 4 5]]
+                      (map (fn [x y z] (+ x (+ y z))) a b c)))))))
+
+(deftest map-multi-seq-length-mismatch
+  (testing "map with mismatched collection lengths throws"
+    (is (thrown-with-msg? Exception #"same length"
+                          (m/query (map (fn [a b] (+ a b)) [1 2] [3 4 5]))))))
