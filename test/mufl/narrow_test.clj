@@ -166,6 +166,39 @@
                                x))))))))
 
 ;; ════════════════════════════════════════════════════════════════
+;; Fix #4: structural = on map nodes
+;; ════════════════════════════════════════════════════════════════
+
+(deftest narrow-structural-eq
+  (testing "same-key equality propagates constrained value"
+    (is (= [2]
+           (m/query (do (let [a {:x (one-of 1 2 3)}
+                              b {:x 2}]
+                          (= a b)
+                          (get a :x)))))))
+
+  (testing "nested map equality narrows recursively"
+    (is (= [10]
+           (m/query (do (let [a {:p {:q (one-of 10 20)}}
+                              b {:p {:q 10}}]
+                          (= a b)
+                          (get (get a :p) :q)))))))
+
+  (testing "mismatched key sets produce contradiction"
+    (is (thrown? Exception
+           (m/query (do (let [a {:x 1 :y 2}
+                              b {:x 1 :z 3}]
+                          (= a b)
+                          a))))))
+
+  (testing "empty maps are trivially equal — no contradiction"
+    (is (= [{}]
+           (m/query (do (let [a {}
+                              b {}]
+                          (= a b)
+                          a)))))))
+
+;; ════════════════════════════════════════════════════════════════
 ;; Propagation edge cases (from edge_cases_test section 3)
 ;; ════════════════════════════════════════════════════════════════
 

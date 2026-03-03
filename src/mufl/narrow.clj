@@ -245,7 +245,10 @@
   "Narrow for a = b (unification). Both domains must intersect.
    When one side has a composite domain (vector-of, tuple, map-of) and
    the other side is a collection node, applies the composite domain's
-   structural constraints to the collection's children."
+   structural constraints to the collection's children.
+   When both sides are plain map nodes, applies structural child-wise equality:
+   key sets must match (else contradiction) and each shared key's children are
+   unified recursively."
   [env [a-path b-path]]
   (let [a-dom (domain-of env a-path)
         b-dom (domain-of env b-path)
@@ -264,7 +267,25 @@
       (and b-composite? a-collection?)
       (apply-composite-constraint env (tree/position a-node) b-dom)
 
-      ;; Both composite (no collection nodes) → standard domain intersection
+      ;; Both sides are plain map nodes → structural child-wise equality
+      (and (:map a-node) (:map b-node))
+      (let [a-children (tree/kw-children a-node)
+            b-children (tree/kw-children b-node)
+            a-keys (set (map ::tree/name a-children))
+            b-keys (set (map ::tree/name b-children))]
+        (if (not= a-keys b-keys)
+          nil ;; key sets differ → contradiction
+          (reduce (fn [{:keys [env changed]} k]
+                    (let [a-child-path (conj (tree/position a-node) k)
+                          b-child-path (conj (tree/position b-node) k)
+                          result (narrow-eq env [a-child-path b-child-path])]
+                      (if (nil? result)
+                        (reduced nil)
+                        {:env (:env result)
+                         :changed (into changed (:changed result))})))
+                  {:env env :changed []}
+                  a-keys)))
+
       ;; Default: existing scalar path
       :else
       (let [shared (dom/intersect a-dom b-dom)]
