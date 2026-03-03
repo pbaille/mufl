@@ -184,3 +184,55 @@
                            (and (= (+ x y) 5)
                                 (< x y)
                                 [x y]))))))))
+
+;; ════════════════════════════════════════════════════════════════
+;; Fix #3: let scope — map/vector literal isolation
+;; ════════════════════════════════════════════════════════════════
+
+(deftest let-scope-no-map-leakage
+  (testing "let binding does not appear in returned map"
+    ;; Bug: {:kind :int, k 42} instead of {:kind :int}
+    (is (= [{:kind :int}]
+           (m/query (let [k 42] {:kind :int})))))
+
+  (testing "multiple let bindings do not leak into map"
+    (is (= [{:x 1, :y 2}]
+           (m/query (let [a 1 b 2] {:x a :y b})))))
+
+  (testing "nested let: outer binding does not appear in inner map"
+    (is (= [{:v 1}]
+           (m/query (let [outer 1]
+                      (let [inner 2] {:v outer}))))))
+
+  (testing "workaround pattern still works (regression guard)"
+    ;; (let [r {:kind :int}] r) was the workaround before Fix #3
+    (is (= [{:kind :int}]
+           (m/query (let [r {:kind :int}] r)))))
+
+  (testing "vector return from let — binding not included in result"
+    ;; Without fix: [42 \"hello\" k] instead of [42 \"hello\"]
+    (is (= [[42 "hello"]]
+           (m/query (let [k 42] [k "hello"])))))
+
+  (testing "scalar return still works"
+    (is (= [42]
+           (m/query (let [k 42] k)))))
+
+  (testing "or constraint still works on let-bound variable"
+    ;; Verifies that constraint operators (or, if, cond) can still reach
+    ;; let-bound variables after the scope fix
+    (is (= [1]
+           (m/query (let [x (one-of 1 2 3)]
+                      (and (or (= x 1)) x))))))
+
+  (testing "multi-body let with map — constraints applied, map returned clean"
+    ;; Intermediate constraint exprs run at scope level; final map is isolated
+    (is (= [{:kind :int}]
+           (m/query (let [x (one-of 1 2)]
+                      (= x 1)
+                      {:kind :int})))))
+
+  (testing "if branching still works inside let body"
+    (is (= #{:small :big}
+           (set (m/query (let [x (one-of 1 10)]
+                           (if (< x 5) :small :big))))))))

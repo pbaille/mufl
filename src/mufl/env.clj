@@ -123,6 +123,11 @@
       ;; ── let: sequential bindings with body ──────────────────
       ;; Supports symbol bindings (let [x 1] ...) and destructuring
       ;; patterns: {:x a :y b} for maps, [a b c] for vectors.
+      ;;
+      ;; Fix #3: map/vector literal bodies are bound as isolated child
+      ;; nodes so that let binding children do not appear in the result.
+      ;; Constraint operators (or, if, cond) still see bindings as
+      ;; siblings because they operate at the same scope level.
       (defop 'let
         {:construct
          (fn [env [bindings-vec & body]]
@@ -142,10 +147,25 @@
 
                                   :else
                                   (throw (ex-info "Invalid destructuring pattern" {:pattern pattern}))))
-                              env pairs)]
-             (if (= 1 (count body))
-               (bind/bind env' (first body))
-               (reduce (fn [e expr] (bind/bind e expr)) env' body))))})
+                              env pairs)
+                 ;; Split into intermediate constraint exprs and the final value expr
+                 [intermediate-exprs final-expr] (if (= 1 (count body))
+                                                   [[] (first body)]
+                                                   [(butlast body) (last body)])
+                 ;; Apply intermediate expressions (typically constraints)
+                 env'' (reduce (fn [e expr] (bind/bind e expr)) env' intermediate-exprs)]
+             ;; For map/vector literal bodies: bind as an isolated child node
+             ;; so that let-binding children don't pollute the map's key set.
+             ;; All other bodies (symbols, sequences) are bound normally at the
+             ;; current level, where constraint operators can still reach bindings.
+             (if (or (map? final-expr) (vector? final-expr))
+               (let [result-name (gensym "let_result_")
+                     result-path (conj (tree/position env'') result-name)
+                     e (bind/bind env'' result-name final-expr)
+                     ;; Mark as derived so query+ doesn't treat it as a user binding
+                     e (tree/put e [result-name] :derived true)]
+                 (assoc e :link result-path))
+               (bind/bind env'' final-expr))))})
 
       ;; ── fresh: introduce logic variables ─────────────────────
       ;; (fresh [x y] body...)           → free variables, body as and
