@@ -100,16 +100,14 @@
 ;; ════════════════════════════════════════════════════════════════
 
 (deftest or-empty-branches
-  (testing "(or) with no branches should error"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (m/query (let [x (one-of 1 2 3)]
-                            (and (or) x)))))))
+  (testing "(or) with no branches returns empty"
+    (is (= [] (m/query (let [x (one-of 1 2 3)]
+                         (and (or) x)))))))
 
 (deftest or-all-contradict
-  (testing "or where all branches contradict"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (m/query (let [x (one-of 1 2 3)]
-                            (and (or (= x 10) (= x 20)) x)))))))
+  (testing "or where all branches contradict returns empty"
+    (is (= [] (m/query (let [x (one-of 1 2 3)]
+                         (and (or (= x 10) (= x 20)) x)))))))
 
 (deftest or-loses-correlation
   (testing "or unions domains independently — loses branch correlation (known limitation)"

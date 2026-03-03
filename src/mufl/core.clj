@@ -37,29 +37,34 @@
   "Functional query: bind the expression, solve, extract results.
    Returns a seq of result values."
   [expr]
-  (let [base    (env/base-env)
-        ws-name (gensym "ws")
-        ws-path [ws-name]
-        env     (tree/ensure-path base ws-path)
-        env     (tree/upd env ws-path #(bind/bind % expr))
-        ws-node (tree/cd env ws-path)
-        return-domain (:domain ws-node)]
-    (cond
-      ;; Already ground
-      (and return-domain (dom/singleton? return-domain))
-      [(dom/singleton-val return-domain)]
+  (try
+    (let [base    (env/base-env)
+          ws-name (gensym "ws")
+          ws-path [ws-name]
+          env     (tree/ensure-path base ws-path)
+          env     (tree/upd env ws-path #(bind/bind % expr))
+          ws-node (tree/cd env ws-path)
+          return-domain (:domain ws-node)]
+      (cond
+        ;; Already ground
+        (and return-domain (dom/singleton? return-domain))
+        [(dom/singleton-val return-domain)]
 
-      ;; Void — no solutions
-      (and return-domain (dom/void? return-domain))
-      []
+        ;; Void — no solutions
+        (and return-domain (dom/void? return-domain))
+        []
 
-      (let [resolved-dom (:domain (bind/resolve ws-node))]
-        (and resolved-dom (dom/void? resolved-dom)))
-      []
+        (let [resolved-dom (:domain (bind/resolve ws-node))]
+          (and resolved-dom (dom/void? resolved-dom)))
+        []
 
-      ;; DFS search
-      :else
-      (vec (search-dfs env ws-path search/extract-value)))))
+        ;; DFS search
+        :else
+        (vec (search-dfs env ws-path search/extract-value))))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= "All or-branches contradicted" (ex-message e))
+        []
+        (throw e)))))
 
 (defmacro query
   "Query macro: bind the expression, solve, extract results.
@@ -80,24 +85,29 @@
    Returns a vector of maps, where each map contains all user-defined
    bindings from the workspace scope: [{x 1, y 5} {x 2, y 4}]."
   [expr]
-  (let [base    (env/base-env)
-        ws-name (gensym "ws")
-        ws-path [ws-name]
-        env     (tree/ensure-path base ws-path)
-        env     (tree/upd env ws-path #(bind/bind % expr))
-        ws-node (tree/cd env ws-path)
-        return-domain (:domain ws-node)]
-    (cond
-      ;; Void — no solutions
-      (and return-domain (dom/void? return-domain))
-      []
+  (try
+    (let [base    (env/base-env)
+          ws-name (gensym "ws")
+          ws-path [ws-name]
+          env     (tree/ensure-path base ws-path)
+          env     (tree/upd env ws-path #(bind/bind % expr))
+          ws-node (tree/cd env ws-path)
+          return-domain (:domain ws-node)]
+      (cond
+        ;; Void — no solutions
+        (and return-domain (dom/void? return-domain))
+        []
 
-      (let [resolved-dom (:domain (bind/resolve ws-node))]
-        (and resolved-dom (dom/void? resolved-dom)))
-      []
+        (let [resolved-dom (:domain (bind/resolve ws-node))]
+          (and resolved-dom (dom/void? resolved-dom)))
+        []
 
-      :else
-      (vec (search-dfs env ws-path search/extract-bindings)))))
+        :else
+        (vec (search-dfs env ws-path search/extract-bindings))))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= "All or-branches contradicted" (ex-message e))
+        []
+        (throw e)))))
 
 (defmacro query+
   "Query+ macro: bind the expression, solve, return full environments.

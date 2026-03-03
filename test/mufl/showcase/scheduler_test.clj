@@ -46,10 +46,9 @@
                          (<= (+ sC 1) 4))) ; C finishes by 4
                   solutions)))))
 
-(deftest over-constrained-throws
-  (testing "impossible: two tasks with same tight deadline must overlap"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (sched/schedule tasks-impossible)))))
+(deftest over-constrained-returns-empty
+  (testing "impossible: two tasks with same tight deadline → empty result"
+    (is (= [] (sched/schedule tasks-impossible)))))
 
 (deftest lazy-enumeration
   (testing "large search space returns first N schedules lazily"
