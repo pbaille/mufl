@@ -986,8 +986,21 @@ Like `query`, `query+` accepts multiple body forms (implicit `do`).
 | `abs` | Absolute value — propagates bidirectionally |
 | `min` / `max` | Two-argument min/max on values |
 | `count` | Number of elements in a vector or map |
+| `first` | First element of a vector — sugar for `(nth v 0)` |
+| `rest` | All but first element — sugar for `(drop 1 v)` |
+| `take` | First n elements of a vector |
 | `drop` | Drop first n elements from a vector |
+| `concat` | Concatenate two vectors |
+| `sort` | Sorted (non-decreasing) permutation of a vector |
+| `sort-by` | Sort a vector by a key function |
+| `sorted?` | Assert a vector is already sorted (adds `<=` constraints between consecutive elements) |
 | `dissoc` | Remove keys from a map |
+| `select-keys` | Keep only specified keys from a map |
+| `merge` | Combine two maps (right-biased — second map wins on conflicts) |
+| `update` | Apply a function to the value at a key in a map |
+| `map-vals` | Apply a function to every value in a map |
+| `every` | Universal quantifier — all elements must satisfy predicate (throws on contradiction) |
+| `some` | Existential quantifier — at least one element must satisfy predicate |
 | Predicates | `even`, `odd`, `pos`, `neg`, `zero` |
 | Type constraints | `string`, `integer`, `number`, `keyword`, `boolean` (also usable as type domains) |
 | `query` | Bind + solve → all solutions (implicit `do` for multiple body forms) |
