@@ -552,18 +552,22 @@ Reuses immucode.tree's core ideas:
 
 ```
 src/mufl/
-  domain.clj   (1276 LOC)  Domain algebra: kinds, relate, intersect/unite/subtract, step, split
-  env.clj      (955 LOC)   Base environment: 8 register-* groups (core forms, relational,
-                            arithmetic, type system, definitions, collections, destructuring, predicates)
-  bind.clj     (480 LOC)   Core bind + constraint registration
-  narrow.clj   (520 LOC)   Constraint narrowing functions + propagation engine
-  pattern.clj  (479 LOC)   Pattern-position destructuring (bind-pattern)
-  schema.clj   (239 LOC)   Domain resolution + structural constraint application
-  search.clj   (368 LOC)   Search: grounded?, split, validate-ground, extract-value, extract-bindings
-  tree.clj     (133 LOC)   Immutable navigable tree
-  show.clj     (383 LOC)   Tree → mufl code serialization
-  core.clj     (246 LOC)   Entry points: query, query+, query1, query-lazy, simplify
-  showcase.clj (842 LOC)   Working examples as tests
+  env.clj                    (1759 LOC)  Base environment: 8 register-* groups (core forms, relational,
+                                         arithmetic, type system, definitions, collections, destructuring, predicates)
+  domain.clj                 (1276 LOC)  Domain algebra: kinds, relate, intersect/unite/subtract, step, split
+  showcase.clj               (1064 LOC)  Working examples as tests
+  narrow.clj                  (918 LOC)  Constraint narrowing functions + propagation engine
+  bind.clj                    (483 LOC)  Core bind + constraint registration
+  pattern.clj                 (479 LOC)  Pattern-position destructuring (bind-pattern)
+  showcase/type_infer.clj     (451 LOC)  Type inference showcase
+  show.clj                    (383 LOC)  Tree → mufl code serialization
+  showcase/bidirectional.clj  (376 LOC)  Bidirectional type-checking showcase
+  search.clj                  (368 LOC)  Search: grounded?, split, validate-ground, extract-value, extract-bindings
+  showcase/scheduler.clj      (310 LOC)  Scheduler showcase
+  core.clj                    (256 LOC)  Entry points: query, query+, query1, query-lazy, simplify
+  showcase/sudoku.clj         (249 LOC)  Sudoku showcase
+  schema.clj                  (239 LOC)  Domain resolution + structural constraint application
+  tree.clj                    (133 LOC)  Immutable navigable tree
 ```
 
-491 tests, 1440 assertions, 0 failures.
+602 tests, 1711 assertions, 0 failures.
