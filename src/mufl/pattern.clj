@@ -13,7 +13,8 @@
      Returns [env' bound-syms] — updated env + ordered vector of all symbols bound"
   (:require [mufl.tree :as tree]
             [mufl.domain :as dom]
-            [mufl.narrow :as narrow]))
+            [mufl.narrow :as narrow]
+            [mufl.schema :as schema]))
 
 ;; Late binding for bind functions (breaks circular dep)
 (defn- lazy-bind []
@@ -453,8 +454,7 @@
       ;; link+map (and-composition) into plain map nodes.
       ;; resolve-schema-from-tree follows links internally, so pre-resolving is unnecessary.
       :else
-      (let [try-resolve @(requiring-resolve 'mufl.schema/try-resolve-schema-from-tree)
-            domain (try-resolve node)]
+      (let [domain (schema/try-resolve-schema-from-tree node)]
         (if domain
           (do
             (when (not= 1 (count args))
@@ -475,8 +475,7 @@
                       found (tree/find env' [seed-sym])
                       target (narrow/resolve found)
                       target-path (tree/position target)
-                      apply-constraint @(requiring-resolve 'mufl.schema/apply-domain-constraint)
-                      env'' (apply-constraint env' domain target-path)]
+                      env'' (schema/apply-domain-constraint env' domain target-path)]
                   [env'' bound-syms]))))
           (throw (ex-info (str "Cannot use '" head "' as pattern: not a function, destructor, or domain")
                           {:pattern (cons head args)})))))))
