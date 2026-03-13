@@ -61,7 +61,7 @@
         ;; DFS search
         :else
         (vec (search-dfs env ws-path search/extract-value))))
-    (catch clojure.lang.ExceptionInfo e
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
       (if (= "All or-branches contradicted" (ex-message e))
         []
         (throw e)))))
@@ -104,7 +104,7 @@
 
         :else
         (vec (search-dfs env ws-path search/extract-bindings))))
-    (catch clojure.lang.ExceptionInfo e
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
       (if (= "All or-branches contradicted" (ex-message e))
         []
         (throw e)))))
@@ -146,7 +146,7 @@
         (let [resolved-dom (:domain (bind/resolve ws-node))]
           (and resolved-dom (dom/void? resolved-dom)))          nil
         :else [env ws-path]))
-    (catch clojure.lang.ExceptionInfo _ nil)))
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil)))
 
 (defn- dfs-one
   "Find one ground solution via DFS, pushing unexplored right-branches onto
@@ -242,7 +242,7 @@
           env     (tree/ensure-path base ws-path)
           env     (tree/upd env ws-path #(bind/bind % expr))]
       {:tree env :scope ws-path})
-    (catch clojure.lang.ExceptionInfo _
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _
       nil)))
 
 (defmacro simplify

@@ -66,7 +66,7 @@
     :integer integer?
     :number  number?
     :keyword keyword?
-    :boolean #(instance? Boolean %)))
+    :boolean boolean?))
 
 (defn- type-compatible?
   "Check whether value v belongs to type t."
@@ -1145,7 +1145,7 @@
                          (let [ta (type a) tb (type b)]
                            (if (= ta tb)
                              (compare a b)
-                             (compare (.getName ^Class ta) (.getName ^Class tb)))))
+                             (compare (str ta) (str tb)))))
                        (:values d))
           n      (count sorted)
           mid    (quot n 2)

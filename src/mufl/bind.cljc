@@ -445,7 +445,7 @@
    Extracts per-element domains from tuple/vector-of composites or tree children.
    Returns [env' bound-syms]."
   [env pattern seed-sym seed-domain]
-  (let [dot-idx (.indexOf ^java.util.List pattern '.)
+  (let [dot-idx (reduce-kv (fn [acc i x] (if (= x '.) (reduced i) acc)) -1 (vec pattern))
         has-dot? (>= dot-idx 0)
         positional (if has-dot?
                      (subvec pattern 0 dot-idx)
@@ -650,9 +650,9 @@
             (let [result (try
                            (fn-destruct-branch env params body pattern-syms
                                                seed-sym seed-domain)
-                           (catch clojure.lang.ExceptionInfo e
+                           (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
                              e))]
-              (if (instance? Throwable result)
+              (if (instance? #?(:clj Throwable :cljs js/Error) result)
                 (recur (rest remaining) result)
                 result))))))))
 
@@ -827,12 +827,12 @@
             ;; Try this branch
             (let [result (try
                            (call-branch env-after-args arg-paths params body my-pos fn-name)
-                           (catch clojure.lang.ExceptionInfo e
+                           (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
                              ;; Recursion depth errors propagate immediately
                              (when (contains? (ex-data e) :depth)
                                (throw e))
                              e))]
-              (if (instance? Throwable result)
+              (if (instance? #?(:clj Throwable :cljs js/Error) result)
                 (recur (rest remaining) result)
                 result))))))))
 

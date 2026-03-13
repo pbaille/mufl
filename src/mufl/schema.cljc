@@ -69,7 +69,7 @@
   [node]
   (try
     (resolve-schema-from-tree node)
-    (catch clojure.lang.ExceptionInfo _ nil)))
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil)))
 
 (defn resolve-domain-schema
   "Resolve a domain expression into a domain value.

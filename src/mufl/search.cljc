@@ -128,7 +128,7 @@
     (when (seq candidates)
       (apply min-key
              (fn [p]
-               (or (dom/size (bind/domain-of env p)) Long/MAX_VALUE))
+               (or (dom/size (bind/domain-of env p)) #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER)))
              candidates))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -159,9 +159,9 @@
         :else
         (keep identity
               [(try [(bind/bind env test) then]
-                    (catch clojure.lang.ExceptionInfo _ nil))
+                    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil))
                (try [(bind/bind env (list 'not test)) else]
-                    (catch clojure.lang.ExceptionInfo _ nil))])))
+                    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil))])))
 
     :cond
     (keep (fn [[test expr]]
@@ -171,7 +171,7 @@
                 (true? test)   [env expr]
                 (false? test)  nil
                 :else          [(bind/bind env test) expr])
-              (catch clojure.lang.ExceptionInfo _ nil)))
+              (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil)))
           (:branches fork))
 
     ;; :trees kind is handled directly in split-fork, not here
@@ -196,7 +196,7 @@
                                                            [:domain :link :vector :map]))
                                        (cond-> new-fork (assoc :fork new-fork))))))]
       result-root)
-    (catch clojure.lang.ExceptionInfo _ nil)))
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil)))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; split

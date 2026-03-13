@@ -267,7 +267,7 @@
                (throw (ex-info "All or-patterns failed in destructuring"
                                {:args args :seed seed-sym}))
                (if-let [result (try (bind/bind-pattern env pat seed-sym seed-domain)
-                                    (catch Exception _ nil))]
+                                    (catch #?(:clj Exception :cljs :default) _ nil))]
                  result
                  (recur rest-pats)))))
          :construct
@@ -279,7 +279,7 @@
                  (keep (fn [arg]
                          (try
                            (bind/bind env arg)
-                           (catch clojure.lang.ExceptionInfo _ nil)))
+                           (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) _ nil)))
                        args)]
              (if (empty? branch-envs)
                (throw (ex-info "All or-branches contradicted" {:args args}))
@@ -351,8 +351,8 @@
              (false? test) (bind/bind env (if (some? else) else nil))
              :else
              ;; Try eager resolution: evaluate the test as a constraint
-             (let [then-env (try (bind/bind env test) (catch Exception _ nil))
-                   else-env (try (bind/bind env (list 'not test)) (catch Exception _ nil))]
+             (let [then-env (try (bind/bind env test) (catch #?(:clj Exception :cljs :default) _ nil))
+                   else-env (try (bind/bind env (list 'not test)) (catch #?(:clj Exception :cljs :default) _ nil))]
                (cond
                  ;; Only then-branch is satisfiable → take it eagerly
                  (and then-env (nil? else-env))
@@ -396,7 +396,7 @@
                                   :else
                                   (try
                                     [(bind/bind env test) body]
-                                    (catch Exception _ nil))))
+                                    (catch #?(:clj Exception :cljs :default) _ nil))))
                               branches)]
              (cond
                ;; Exactly one branch viable → take it eagerly
@@ -840,7 +840,7 @@
                            (try
                              (bind/bind env (list pred-sym (list 'nth coll-expr i)))
                              true ;; succeeded — include
-                             (catch Exception _
+                             (catch #?(:clj Exception :cljs :default) _
                                false))) ;; contradicted — exclude
                          (range n)))
                    result-exprs (mapv (fn [i] (list 'nth coll-expr i))
@@ -1218,7 +1218,7 @@
                                ;; Navigate back, clearing :link from predicate return
                                (-> (tree/cd (tree/root result) my-pos)
                                    (dissoc :link)))
-                             (catch Exception ex
+                             (catch #?(:clj Exception :cljs :default) ex
                                (throw (ex-info (str "every: predicate failed on element " i)
                                                {:index i :vec vec-expr :cause (.getMessage ex)})))))
                          env
@@ -1248,7 +1248,7 @@
                               (try
                                 (bind/bind env (list pred-sym (list 'nth vec-sym i)))
                                 true
-                                (catch Exception _ false)))
+                                (catch #?(:clj Exception :cljs :default) _ false)))
                             (range n))]
                (when-not any-ok?
                  (throw (ex-info "some: no element satisfies predicate"
@@ -1275,7 +1275,7 @@
                         (try
                           (bind/bind env (list pred-sym (list 'get map-expr k)))
                           true
-                          (catch Exception _ false))))
+                          (catch #?(:clj Exception :cljs :default) _ false))))
                     all-children)]
                ;; Build anonymous map node with surviving entries
                (let [anon (gensym "filtmap__")
