@@ -324,7 +324,7 @@
 
 (deftest zip-length-mismatch
   (testing "zip throws on different-length vectors"
-    (is (thrown-with-msg? Exception #"same length"
+    (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"same length"
                           (m/query (zip [1 2] [3 4 5]))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -473,11 +473,11 @@
 
 (deftest assoc-errors
   (testing "assoc throws on out-of-bounds index"
-    (is (thrown-with-msg? Exception #"out of bounds"
+    (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"out of bounds"
                           (m/query (assoc [1 2 3] 5 99)))))
 
   (testing "assoc throws on negative index"
-    (is (thrown-with-msg? Exception #"out of bounds"
+    (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"out of bounds"
                           (m/query (assoc [1 2 3] -1 99))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -497,11 +497,11 @@
 
 (deftest every-contradiction
   (testing "every throws when an element contradicts"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                  (m/query (every even [1 2 4])))))
 
   (testing "every throws on all-odd"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                  (m/query (every even [1 3 5]))))))
 
 (deftest every-with-function
@@ -530,7 +530,7 @@
 
 (deftest some-contradiction
   (testing "some throws when no element satisfies"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                  (m/query (some even [1 3 5]))))))
 
 (deftest some-with-domains
@@ -612,7 +612,7 @@
                                x)))))
 
   (testing "contains? contradiction — element not in vector"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                  (m/query (fresh [(integer x)]
                                  (contains? [1 2 3] x)
                                  (= x 5)
@@ -656,7 +656,7 @@
 
 (deftest index-of-contradiction
   (testing "index-of throws when element not found"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                  (m/query (index-of [1 2 3] 99))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -806,7 +806,7 @@
     (is (= [[1 2 3]] (m/query (let [v [1 2 3]] (sorted? v) v)))))
 
   (testing "sorted? on unsorted vector — contradiction"
-    (is (thrown? Exception (m/query (let [v [3 1 2]] (sorted? v) v)))))
+    (is (thrown? #?(:clj Exception :cljs js/Error) (m/query (let [v [3 1 2]] (sorted? v) v)))))
 
   (testing "sorted? on single element"
     (is (= [[5]] (m/query (let [v [5]] (sorted? v) v))))))
@@ -973,5 +973,5 @@
 
 (deftest map-multi-seq-length-mismatch
   (testing "map with mismatched collection lengths throws"
-    (is (thrown-with-msg? Exception #"same length"
+    (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"same length"
                           (m/query (map (fn [a b] (+ a b)) [1 2] [3 4 5]))))))

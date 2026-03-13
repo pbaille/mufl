@@ -51,7 +51,7 @@
 
 (deftest vector-of-contradiction
   (testing "vector-of integer with all-string elements throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (let [v ["a" "b" "c"]]
                            (narrow v (vector-of integer))
                            v))))))
@@ -101,7 +101,7 @@
                       v)))))
 
   (testing "tuple length mismatch throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (let [v [1 2 3]]
                            (narrow v (tuple [integer string]))
                            v))))))
@@ -528,7 +528,7 @@
                       v)))))
 
   (testing "= with tuple length mismatch causes contradiction"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (let [v [1 2 3]]
                            (= v (tuple [integer string]))
                            v))))))
@@ -571,13 +571,13 @@
 
 (deftest eq-composite-contradiction
   (testing "= vector-of integer on all-string elements throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (let [v ["a" "b"]]
                            (= v (vector-of integer))
                            v)))))
 
   (testing "= tuple on wrong types throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (let [v ["hello" 42]]
                            (= v (tuple [integer string]))
                            v))))))
@@ -588,13 +588,13 @@
 
 (deftest callable-domain-contradiction
   (testing "callable domain on all-wrong-type elements throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (let [intvec (vector-of integer)
                               v ["a" "b" "c"]]
                            (intvec v) v)))))
 
   (testing "callable struct domain on wrong shape throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (def person {:name string :age integer})
                              (let [p {:name 42 :age "old"}]
                                (person p) p)))))))
@@ -666,7 +666,7 @@
 
 (deftest callable-domain-pattern-contradiction
   (testing "callable domain pattern on wrong type throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (def small (between 1 10))
                              (let [v 20]
                                (let [(small x) v] x))))))))

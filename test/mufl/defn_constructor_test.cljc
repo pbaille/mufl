@@ -56,7 +56,7 @@
                         (point 1 2))))))
 
   (testing "param constraints reject wrong types"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (defn point [(integer x) (integer y)] {:x x :y y})
                              (point "hello" 2)))))))
 
@@ -88,7 +88,7 @@
                         (point3d 1 2 3))))))
 
   (testing "arity mismatch throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (defn point [x y] {:x x :y y})
                              (point 1)))))))
 

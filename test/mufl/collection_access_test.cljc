@@ -48,15 +48,15 @@
 
 (deftest get-errors
   (testing "get on non-map throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not a map"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"not a map"
           (m/query (let [v [1 2 3]] (get v :x))))))
 
   (testing "get with missing key throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"key not found"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"key not found"
           (m/query (let [m {:x 1}] (get m :y))))))
 
   (testing "get with non-keyword key throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"key must be a literal keyword"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"key must be a literal keyword"
           (m/query (let [m {:x 1}] (get m 0)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -90,15 +90,15 @@
 
 (deftest nth-errors
   (testing "nth on non-vector throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not a vector"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"not a vector"
           (m/query (let [m {:x 1}] (nth m 0))))))
 
   (testing "nth with out-of-bounds index throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"index out of bounds"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"index out of bounds"
           (m/query (let [v [1 2 3]] (nth v 5))))))
 
   (testing "nth with non-integer index throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"index must be a literal integer"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"index must be a literal integer"
           (m/query (let [v [1 2 3]] (nth v :x)))))))
 
 ;; ════════════════════════════════════════════════════════════════

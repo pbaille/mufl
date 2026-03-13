@@ -8,7 +8,7 @@
 
 (deftest no-solutions
   (testing "all branches contradict during solve"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [x (one-of 1 2 3)]
                             (and (> x 5) x)))))))
 

@@ -109,7 +109,7 @@
 
 (deftest defn-arity-mismatch
   (testing "wrong number of arguments throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (defn positive [x] (> x 0))
                              (let [n 5]
                                (positive n 3))))))))

@@ -77,13 +77,13 @@
 
 (deftest recursion-depth-limit
   (testing "infinite recursion is caught"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"Recursion depth limit exceeded"
                           (m/query (let [f (fn [x] (f x))] (f 1))))))
   (testing "mutual-style infinite recursion caught"
     ;; Even though true mutual recursion isn't supported,
     ;; a function that always recurs should be caught
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"Recursion depth limit exceeded"
                           (m/query (let [f (fn [x] (f (+ x 1)))] (f 0)))))))
 

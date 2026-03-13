@@ -118,23 +118,23 @@
 
 (deftest destructuring-errors
   (testing "map destructuring on a vector throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not a map"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"not a map"
           (m/query (let [{:x x} [1 2 3]] x)))))
 
   (testing "vector destructuring on a map throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not a vector"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"not a vector"
           (m/query (let [[a b] {:x 1 :y 2}] a)))))
 
   (testing "map destructuring with missing key throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"key not found"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"key not found"
           (m/query (let [{:z z} {:x 1 :y 2}] z)))))
 
   (testing "vector destructuring with too many bindings throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"index out of bounds"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"index out of bounds"
           (m/query (let [[a b c] [1 2]] c)))))
 
   (testing "{:keys [...]} gives helpful error"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not supported"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"not supported"
           (m/query (let [{:keys [x]} {:x 1}] x))))))
 
 ;; ── Combined / integration ────────────────────────────────────
@@ -622,7 +622,7 @@
            (m/query (let [[a . mid c] [1 2 3]] [a mid c])))))
 
   (testing "too few elements for head+tail count errors"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"pattern requires at least"
           (m/query (let [[a b . mid c d] [1 2 3]] [a b mid c d])))))
 
@@ -643,7 +643,7 @@
            (m/query (let [[a . [b c]] [1 2 3]] [a b c])))))
 
   (testing "[a . (ks x)] — rest destructured with ks (should fail, rest is vector not map)"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
           (m/query (let [[a . (ks x)] [1 {:x 2}]] [a x]))))))
 
 (deftest map-dot-bare
@@ -712,7 +712,7 @@
 
 (deftest or-all-patterns-fail
   (testing "or in pattern position where all patterns fail"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"All or-patterns failed"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"All or-patterns failed"
           (m/query (let [(or [a b] (ks x)) "not a map or vec"] a))))))
 
 ;; ── 7. Constructor + destructuring composition ─────────────────
@@ -759,12 +759,12 @@
 
 (deftest keys-error-message
   (testing "{:keys [...]} gives helpful error"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"not supported"
           (m/query (let [{:keys [x]} {:x 1}] x)))))
 
   (testing "{:keys [...]} with other entries still errors"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"not supported"
           (m/query (let [{:keys [x] :y y} {:x 1 :y 2}] x))))))
 
@@ -772,35 +772,35 @@
 
 (deftest non-keyword-map-keys-error
   (testing "map pattern with string key errors"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"must be keywords"
           (m/query (let [{"name" n} {"name" "Alice"}] n)))))
 
   (testing "map pattern with integer key errors"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"must be keywords"
           (m/query (let [{0 a} {0 "first"}] a))))))
 
 (deftest as-non-symbol-name-error
   (testing "(as 42 pattern) — numeric name should error"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"must be a symbol"
           (m/query (let [(as 42 (ks x)) {:x 1}] x)))))
 
   (testing "(as :m pattern) — keyword name should error"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"must be a symbol"
           (m/query (let [(as :m (ks x)) {:x 1}] x))))))
 
 (deftest unresolved-pattern-head-error
   (testing "unresolved symbol in list pattern"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"Unresolved pattern head"
           (m/query (let [(nonexistent x) {:x 1}] x))))))
 
 (deftest invalid-destructuring-pattern-error
   (testing "literal number as pattern"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                           #"Invalid destructuring pattern"
           (m/query (let [42 100] 42))))))
 

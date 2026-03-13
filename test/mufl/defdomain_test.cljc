@@ -124,7 +124,7 @@
 
 (deftest def-contradiction
   (testing "domain constraint with no valid values throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (def person {:name string :age (between 0 150)})
                              (let [p {:name 42 :age 30}]
                                (narrow p person)

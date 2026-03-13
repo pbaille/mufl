@@ -144,7 +144,7 @@
 (deftest type-error-apply-non-function
   (testing "applying a non-arrow type throws ExceptionInfo"
     ;; (42) 1 — 42 has type :int, not :arrow
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (ti/infer empty-env
                            {:kind :app
                             :fn  {:kind :int-lit :val 42}
@@ -153,7 +153,7 @@
 (deftest type-error-add-bool
   (testing "adding a bool operand throws ExceptionInfo"
     ;; true + 1 — left operand is :bool, not :int
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (ti/infer empty-env
                            {:kind :add
                             :left  {:kind :bool-lit :val true}
@@ -162,7 +162,7 @@
 (deftest type-error-mismatched-branches
   (testing "if-then-else with different branch types throws ExceptionInfo"
     ;; if true then 1 else false — :int ≠ :bool
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (ti/infer empty-env
                            {:kind :iff
                             :cond {:kind :bool-lit :val true}
@@ -172,7 +172,7 @@
 (deftest type-error-wrong-arg-type
   (testing "applying λx.(x+1) to a bool throws ExceptionInfo"
     ;; (λx. x+1) true — :bool doesn't match arrow domain :int
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (ti/infer empty-env
                            {:kind :app
                             :fn  {:kind :lam

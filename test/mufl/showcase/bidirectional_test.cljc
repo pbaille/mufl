@@ -63,7 +63,7 @@
 
 (deftest test-body-constraints-bidirectional
   (testing "expression position — out-of-range arg raises contradiction"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query
                   (do
                     (defn bounded-point [x y]

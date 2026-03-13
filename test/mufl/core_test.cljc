@@ -94,12 +94,12 @@
 
 (deftest contradiction
   (testing "impossible constraint throws"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Contradiction"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"Contradiction"
                           (m/query (let [x (one-of 1 2 3)]
                                      (and (> x 5) x))))))
 
   (testing "contradictory equality"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Contradiction"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"Contradiction"
                           (m/query (let [x (one-of 1 2)
                                          y (one-of 3 4)]
                                      (and (= x y) [x y])))))))
@@ -136,11 +136,11 @@
 
 (deftest fn-wrong-arity
   (testing "function called with too few args"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [f (fn [x y] (+ x y))]
                             (f 1))))))
   (testing "function called with too many args"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [f (fn [x] (+ x 1))]
                             (f 1 2 3)))))))
 
@@ -208,7 +208,7 @@
   (testing "even on a singleton"
     (is (= [2] (m/query (let [x (one-of 2)] (and (even x) x))))))
   (testing "even contradiction on odd singleton"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [x (one-of 1)] (and (even x) x)))))))
 
 ;; ════════════════════════════════════════════════════════════════
@@ -287,7 +287,7 @@
 
 (deftest neq-of-same-var
   (testing "(!= x x) is contradiction"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [x (one-of 1)]
                             (and (!= x x) x)))))))
 

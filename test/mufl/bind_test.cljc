@@ -71,7 +71,7 @@
 
 (deftest contradiction-detection
   (testing "contradictory constraints detected at bind time"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (bind-in-scope
                   (fn [e]
                     (-> e
@@ -109,12 +109,12 @@
 
 (deftest literal-constraint-false
   (testing "(< 3 1) — constraint between literals that fails"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [x 1] (and (< 3 1) x)))))))
 
 (deftest literal-equality-contradiction
   (testing "(= 3 4) — contradicts immediately"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (and (= 3 4) 1))))))
 
 (deftest literal-equality-success

@@ -125,13 +125,13 @@
 
 (deftest narrow-contradiction
   (testing "narrow with contradictory constraint throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (let [p {:name 42 :age 30}]
                               (narrow p {:name string :age integer})
                               (get p :name)))))))
 
   (testing "narrow named domain with contradictory value throws"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                 (m/query (do (def person {:name string :age (between 0 150)})
                              (let [p {:name 42 :age 30}]
                                (narrow p person)
@@ -185,7 +185,7 @@
                           (get (get a :p) :q)))))))
 
   (testing "mismatched key sets produce contradiction"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
            (m/query (do (let [a {:x 1 :y 2}
                               b {:x 1 :z 3}]
                           (= a b)
@@ -290,13 +290,13 @@
 
 (deftest not-with-non-relational
   (testing "(not true) — non-relational inner form should error gracefully"
-    (is (thrown? Exception
+    (is (thrown? #?(:clj Exception :cljs js/Error)
                  (m/query (not true))))))
 
 (deftest not-double-negation
   (testing "(not (not ...)) — double negation is not supported (known limitation)"
     ;; not only handles relational ops, not itself. Would need special handling.
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (m/query (let [x (one-of 1 2 3)]
                             (and (not (not (= x 1))) x)))))))
 
@@ -472,7 +472,7 @@
                       (and (pos x) x))))))
 
   (testing "pos contradiction"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Contradiction"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"Contradiction"
           (m/query (let [x (one-of -2 -1 0)]
                      (and (pos x) x)))))))
 
@@ -483,7 +483,7 @@
                       (and (neg x) x))))))
 
   (testing "neg contradiction"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Contradiction"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"Contradiction"
           (m/query (let [x (one-of 0 1 2)]
                      (and (neg x) x)))))))
 
@@ -494,7 +494,7 @@
                       (and (zero x) x))))))
 
   (testing "zero contradiction"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Contradiction"
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) #"Contradiction"
           (m/query (let [x (one-of 1 2 3)]
                      (and (zero x) x)))))))
 
