@@ -92,9 +92,17 @@ See [`src/mufl/showcase.clj`](src/mufl/showcase.clj) for a full guided tour — 
 ## Running tests
 
 ```bash
+# Run JVM tests
 clj -M:test
+
+# Run CLJS tests (Node.js)
+npx shadow-cljs compile test
 ```
+
+## ClojureScript
+
+mufl works on both JVM Clojure and ClojureScript (Node.js). All source and test files are `.cljc` with reader conditionals for the few platform-specific bits. The CLJS build uses shadow-cljs with a `:node-test` target.
 
 ## Status
 
-Active development. 602 tests passing, 1711 assertions.
+Active development. 602 tests passing on JVM, 593 on CLJS.
