@@ -3,5 +3,5 @@
  :builds
  {:test {:target :node-test
          :output-to "out/test.js"
-         :ns-regexp #"mufl\..*-test$"
+         :ns-regexp "-test$"
          :autorun true}}}

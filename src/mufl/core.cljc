@@ -9,7 +9,8 @@
             [mufl.domain :as dom]
             [mufl.bind :as bind]
             [mufl.env :as env]
-            [mufl.search :as search]))
+            [mufl.search :as search])
+  #?(:cljs (:require-macros [mufl.core])))
 
 ;; ════════════════════════════════════════════════════════════════
 ;; DFS search engine (built on search/grounded? + search/split)

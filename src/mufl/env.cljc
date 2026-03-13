@@ -1220,7 +1220,7 @@
                                    (dissoc :link)))
                              (catch #?(:clj Exception :cljs :default) ex
                                (throw (ex-info (str "every: predicate failed on element " i)
-                                               {:index i :vec vec-expr :cause (.getMessage ex)})))))
+                                               {:index i :vec vec-expr :cause (ex-message ex)})))))
                          env
                          (range n))]
                ;; Return the vector (via stable name → links to narrowed version)

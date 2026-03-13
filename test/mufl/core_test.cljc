@@ -245,10 +245,11 @@
 
 (deftest large-domain-with-tight-constraint
   (testing "between 1..500 narrowed to 1 value is fast"
-    (let [t0 (System/nanoTime)
+    (let [t0 #?(:clj (System/nanoTime) :cljs (system-time))
           results (m/query (let [x (between 1 500)]
                              (and (= x 42) x)))
-          elapsed-ms (/ (- (System/nanoTime) t0) 1e6)]
+          elapsed-ms #?(:clj (/ (- (System/nanoTime) t0) 1e6)
+                        :cljs (- (system-time) t0))]
       (is (= [42] results))
       (is (< elapsed-ms 500) "Should complete in under 500ms"))))
 

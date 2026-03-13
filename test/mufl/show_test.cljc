@@ -1,5 +1,5 @@
 (ns mufl.show-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest testing is]]
             [mufl.show :as show]
             [mufl.tree :as tree]
             [mufl.domain :as dom]

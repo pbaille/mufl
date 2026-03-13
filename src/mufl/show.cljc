@@ -56,15 +56,15 @@
       (:vector resolved)
       (vec (mapcat (fn [c]
                      (collect-leaves env c
-                                    (conj output-pos (::tree/name c))
-                                    (conj visited rpath)))
+                                     (conj output-pos (::tree/name c))
+                                     (conj visited rpath)))
                    (tree/int-children resolved)))
 
       (:map resolved)
       (vec (mapcat (fn [c]
                      (collect-leaves env c
-                                    (conj output-pos (::tree/name c))
-                                    (conj visited rpath)))
+                                     (conj output-pos (::tree/name c))
+                                     (conj visited rpath)))
                    (tree/kw-children resolved)))
 
       (and d (dom/singleton? d)) []
@@ -155,7 +155,8 @@
                          nm
                          (loop []
                            (let [idx @gen-counter
-                                 s (symbol (str (char (+ (int \a) (mod idx 26)))
+                                 s (symbol (str #?(:clj (char (+ (int \a) (mod idx 26)))
+                                                   :cljs (.fromCharCode js/String (+ 97 (mod idx 26))))
                                                 (when (>= idx 26) (quot idx 26))))]
                              (swap! gen-counter inc)
                              (if (contains? @used s)
@@ -369,7 +370,7 @@
                       paths-needing-names)
 
                 let-bindings (vec (mapcat (fn [{:keys [sym rhs]}] [sym rhs])
-                                         binding-info))
+                                          binding-info))
 
                 extra-constraints (vec (mapcat :constraints binding-info))
                 residual-exprs (mapv #(constraint->expr env % names) residual)
