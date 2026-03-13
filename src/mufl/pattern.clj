@@ -472,8 +472,11 @@
                 ;; Composite/structural: bind inner pattern first, then apply constraint
                 (let [inner-pattern (first args)
                       [env' bound-syms] (bind-pattern env inner-pattern seed-sym seed-domain)
-                      apply-constraint (fn [] @(requiring-resolve 'mufl.schema/apply-domain-constraint))
-                      env'' ((apply-constraint) env' domain [seed-sym])]
+                      found (tree/find env' [seed-sym])
+                      target (narrow/resolve found)
+                      target-path (tree/position target)
+                      apply-constraint @(requiring-resolve 'mufl.schema/apply-domain-constraint)
+                      env'' (apply-constraint env' domain target-path)]
                   [env'' bound-syms]))))
           (throw (ex-info (str "Cannot use '" head "' as pattern: not a function, destructor, or domain")
                           {:pattern (cons head args)})))))))

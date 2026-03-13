@@ -11,10 +11,6 @@
             [mufl.domain :as dom]
             [mufl.narrow :as narrow]))
 
-;; Late binding for bind functions (breaks circular dep)
-(defn- lazy-ensure-node-abs []
-  @(requiring-resolve 'mufl.bind/ensure-node-abs))
-
 ;; Re-use the canonical definition from narrow
 (def ^:private composite-kinds narrow/composite-kinds)
 
@@ -145,17 +141,13 @@
   (not (composite-kinds (:kind d))))
 
 (defn apply-domain-constraint
-  "Apply a domain as a constraint to an argument.
-   (narrow target Domain) constrains target to match the domain.
+  "Apply a domain as a constraint to a pre-resolved target path.
+   target-path should be an absolute path from root.
    Returns the env at the same position it was called from.
    
    Now works with domain values directly — no separate schema representation."
-  [env domain args]
-  (let [my-pos (tree/position env)
-        target-expr (first args)]
-    (when (not= 1 (count args))
-      (throw (ex-info "Domain constraint takes exactly one argument"
-                      {:args args})))
+  [env domain target-path]
+  (let [my-pos (tree/position env)]
     (letfn [(apply-dom [env target-path domain]
               (case (:kind domain)
                 ;; Scalar domain → intersect
@@ -229,11 +221,8 @@
                           (throw (ex-info "Contradiction during domain propagation"
                                           {:path target-path}))))))))]
 
-      ;; Resolve the target argument (uses late-bound ensure-node-abs from bind)
-      (let [ensure-node-abs* (lazy-ensure-node-abs)
-            [env' target-path] (ensure-node-abs* env target-expr)
-            ;; Follow links to the real target
-            resolved-target (narrow/resolve-at (tree/root env') target-path)
+      ;; target-path is already resolved by caller
+      (let [resolved-target (narrow/resolve-at (tree/root env) target-path)
             resolved-path (tree/position resolved-target)
-            result-root (apply-dom env' resolved-path domain)]
+            result-root (apply-dom env resolved-path domain)]
         (or (tree/cd result-root my-pos) result-root)))))

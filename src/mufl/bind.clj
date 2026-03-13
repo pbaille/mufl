@@ -48,7 +48,8 @@
 
 ;; From mufl.schema
 (def resolve-domain-schema schema/resolve-domain-schema)
-(def apply-domain-constraint schema/apply-domain-constraint)
+
+(declare apply-domain-constraint)
 
 ;; From mufl.pattern
 (def bind-pattern pattern/bind-pattern)
@@ -158,6 +159,16 @@
     (if (symbol? expr)
       [env' rel-path]  ;; already absolute from resolve
       [env' (into scope-pos rel-path)])))
+
+(defn apply-domain-constraint
+  "Resolve target expression and apply domain constraint."
+  [env domain args]
+  (when (not= 1 (count args))
+    (throw (ex-info "Domain constraint takes exactly one argument" {:args args})))
+  (let [[env' target-path] (ensure-node-abs env (first args))
+        resolved-target (narrow/resolve-at (tree/root env') target-path)
+        resolved-path (tree/position resolved-target)]
+    (schema/apply-domain-constraint env' domain resolved-path)))
 
 (defn add-constraint-and-return
   "Add constraint, propagate, then navigate back to the given position.
@@ -440,7 +451,7 @@
              ;; resolve-schema-from-tree follows links internally, so pre-resolving is unnecessary.
              :else
              (if-let [schema (schema/try-resolve-schema-from-tree raw-node)]
-               (schema/apply-domain-constraint env schema args)
+               (apply-domain-constraint env schema args)
                (throw (ex-info (str "Cannot call '" head "': not a function, constructor, or domain")
                                {:head head})))))
 
